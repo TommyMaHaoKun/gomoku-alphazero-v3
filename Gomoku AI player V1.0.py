@@ -1,3 +1,29 @@
+"""Gargantua Gomoku desktop application / Gargantua 五子棋桌面程序。
+
+Architecture / 代码架构
+-----------------------
+This is the user-facing entry point.  It owns the Pygame event loop, board
+rendering, color selection, move history, undo support, and asynchronous calls
+to ``alphazero_training.play_agent.AlphaZeroGomokuAgent``.  The trained model
+and search stay outside the rendering loop so the window remains responsive.
+
+本文件是用户运行的入口，负责 Pygame 事件循环、棋盘绘制、黑白选择、落子历史、
+悔棋，以及异步调用 ``AlphaZeroGomokuAgent``。模型推理和搜索不在绘图主循环中
+执行，因此 AI 思考时窗口仍能响应。
+
+Key algorithms / 重要算法
+-------------------------
+* Exact one-move win and mandatory-block checks protect every committed move.
+* The trained policy-value network and MCTS supply the normal AI decision.
+* A handcrafted shape-scoring heuristic is retained only as an error fallback.
+* A generation number rejects stale worker results after restart or undo.
+
+* 一步必胜与必须封堵检查为最终落子提供战术保护。
+* 正常决策来自策略-价值神经网络与蒙特卡洛树搜索（MCTS）。
+* 人工棋形评分只在模型加载或推理失败时作为后备方案。
+* 棋局代号会丢弃重开或悔棋后返回的过期后台结果。
+"""
+
 from pathlib import Path
 import queue
 import threading

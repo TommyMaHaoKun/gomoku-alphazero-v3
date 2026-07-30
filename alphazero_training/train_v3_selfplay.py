@@ -8,6 +8,33 @@ positions, the tactical curriculum, and an optional manifest-authenticated
 white-defense curriculum.  Active games share tactical routing, root
 evaluation, and leaf inference batches while keeping the replay and checkpoint
 contracts auditable.
+
+Architecture / 代码架构
+-----------------------
+This V3 pipeline extends the base model without changing the legacy trainer.
+``V3RootSearch`` generates tactically filtered self-play. Static replay sources
+and the circular self-play replay are combined by ``SourceMixer``. Mixed
+batches train ``PolicyValueNet``; manifests, replay chunks, RNG states, and
+atomic checkpoints make every resume auditable.
+
+V3 流水线在不改动旧训练器的情况下扩展基础模型。``V3RootSearch`` 生成经过战术
+过滤的自我对弈；静态数据源与循环自我对弈回放由 ``SourceMixer`` 按比例混合；
+混合批次训练 ``PolicyValueNet``。清单、回放分块、随机数状态和原子检查点让每次
+恢复都可以审计。
+
+Key algorithms / 重要算法
+-------------------------
+Parallel self-play shares batched neural inference. Source quotas control the
+ratio of fresh self-play, teacher, tactical, and optional white-defense data.
+Weighted policy/value losses and an optional safe-vs-unsafe margin loss update
+the network with AdamW and a warmup/cosine schedule. ``candidate_model`` is the
+new network under evaluation; ``best_model`` remains the accepted champion
+until an external gate approves promotion.
+
+并行自我对弈共享批量神经网络推理。数据源配额控制新鲜自我对弈、教师、战术和可选
+白棋防守数据的比例。加权策略/价值损失及可选的安全-危险间隔损失通过 AdamW 与
+预热/余弦学习率更新网络。``candidate_model`` 是待评估的新网络，``best_model``
+在外部门控批准晋级前始终保留为已接受冠军。
 """
 
 from __future__ import annotations

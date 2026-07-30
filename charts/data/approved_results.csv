@@ -1,0 +1,4 @@
+﻿metric,passed,total,scope
+Raw tactical network,47,48,held-out tactical positions
+White-defense choices,16,18,held-out white-to-move positions
+Game integration,159,159,software regression checks
