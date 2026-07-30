@@ -23,6 +23,7 @@ from .v3_search import V3RootSearch
 
 DEFAULT_PLAY_SIMULATIONS = 256
 PLAY_SIMULATIONS_ENV = "GOMOKU_MCTS_SIMULATIONS"
+MODEL_NAME = "Gargantua"
 
 
 def configured_play_simulations(simulations: int | None = None) -> int:
@@ -107,7 +108,7 @@ class AlphaZeroGomokuAgent:
 
     @property
     def model_label(self) -> str:
-        return f"AlphaZero {self.training_version.upper()} i{self.iteration}"
+        return f"{MODEL_NAME} {self.training_version.upper()} i{self.iteration}"
 
     @property
     def search_label(self) -> str:

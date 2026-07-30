@@ -1,6 +1,6 @@
-# Gomoku AI
+# Gargantua — Gomoku AI
 
-A playable 19×19 Gomoku program built with Pygame and an AlphaZero-style AI. The player can choose black or white, while the AI combines a policy-value neural network, Monte Carlo Tree Search (MCTS), and exact tactical checks.
+A playable 19×19 Gomoku program built with Pygame and an AlphaZero-style AI named **Gargantua**. The player can choose black or white, while Gargantua combines a policy-value neural network, Monte Carlo Tree Search (MCTS), and exact tactical checks.
 
 The complete final-project report is available in [`summary.md`](summary.md).
 
@@ -106,7 +106,7 @@ The game currently loads the approved checkpoint below:
 
 | Item | Result |
 | --- | --- |
-| Displayed model | AlphaZero V2, iteration 174 |
+| Displayed model | Gargantua V2, iteration 174 |
 | Board size | 19×19 |
 | Replay buffer recorded in checkpoint | 500,000 positions |
 | Desktop search | 256 MCTS simulations per move |

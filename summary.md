@@ -1,8 +1,8 @@
-# Gomoku AI: Final Project Summary
+# Gargantua: Gomoku AI Final Project Summary
 
 ## Abstract
 
-This project developed an executable 19×19 Gomoku game in Python with a trained computer opponent. The main objective was to move beyond a purely rule-based opponent and create an AI that could make strategically meaningful decisions as either black or white. The final system combines a Pygame interface, a PyTorch policy-value neural network, Monte Carlo Tree Search (MCTS), and deterministic tactical safeguards. The neural network was trained through AlphaZero-style self-play reinforcement learning, while a replay buffer, paired evaluation games, checkpointing, and rollback rules were used to make training more stable. The approved playable checkpoint is AlphaZero V2 at iteration 174. It contains a 96-channel, 8-residual-block network with approximately 1.64 million trainable parameters. On the recorded validation suites, its raw network selected the correct move in 47 of 48 held-out legal tactical positions, selected a safe white move in 16 of 18 white-defense positions, and passed 159 Pygame integration decisions. The completed project includes a playable interface, selectable player color, move numbering, AI-move highlighting, reproducible tests, and a public GitHub repository containing the executable code and approved model.
+This project developed an executable 19×19 Gomoku game in Python with a trained computer opponent named **Gargantua**. The main objective was to move beyond a purely rule-based opponent and create an AI that could make strategically meaningful decisions as either black or white. The final system combines a Pygame interface, a PyTorch policy-value neural network, Monte Carlo Tree Search (MCTS), and deterministic tactical safeguards. The neural network was trained through AlphaZero-style self-play reinforcement learning, while a replay buffer, paired evaluation games, checkpointing, and rollback rules were used to make training more stable. The approved playable checkpoint is Gargantua V2 at iteration 174. It contains a 96-channel, 8-residual-block network with approximately 1.64 million trainable parameters. On the recorded validation suites, its raw network selected the correct move in 47 of 48 held-out legal tactical positions, selected a safe white move in 16 of 18 white-defense positions, and passed 159 Pygame integration decisions. The completed project includes a playable interface, selectable player color, move numbering, AI-move highlighting, reproducible tests, and a public GitHub repository containing the executable code and approved model.
 
 ## 1. Problem and Motivation
 
@@ -115,7 +115,7 @@ The program was divided into modules rather than placing training, search, and i
 
 ## 6. Results and Evaluation
 
-The deployed model is **AlphaZero V2, iteration 174**. Its checkpoint records a full replay buffer of 500,000 positions and uses 96 channels with 8 residual blocks. The SHA256 hash of the published checkpoint is:
+The deployed model is **Gargantua V2, iteration 174**. Gargantua is the name of the project's playable model; its architecture and training method remain AlphaZero-style. Its checkpoint records a full replay buffer of 500,000 positions and uses 96 channels with 8 residual blocks. The SHA256 hash of the published checkpoint is:
 
 ```text
 ad2082e7d0223a42047cf0b349b0de17b7fe88c0145dea95c9f2bbe709c6c96e

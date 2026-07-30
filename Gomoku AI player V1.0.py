@@ -9,7 +9,7 @@ BOARD_X0,BOARD_Y0 = 15,15
 GRID_NULL,GRID_BLACK,GRID_WHITE = 0,1,2
 SPEED_X = [1,0,1,-1]
 SPEED_Y = [0,1,1,1]
-APP_TITLE = 'Gomoku AI'
+APP_TITLE = 'Gomoku AI - Gargantua'
 
 def is_five(grid, x, y, flag):
     directions = [(0, 1), (1, 0), (1, 1), (1, -1)]  # Horizontal, Vertical, Diagonal Right, Diagonal Left
