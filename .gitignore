@@ -1,0 +1,46 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editor and local agent state
+.vscode/
+.idea/
+.agents/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+
+# Generated training/evaluation artifacts
+*.log
+*.err.log
+*.npz
+*.npy
+*.tar.gz
+*.zip
+*.pt
+!alphazero_training/latest.pt
+
+# Generated reports, replay buffers, candidates, and smoke runs
+alphazero_training/*.json
+alphazero_training/*_candidates_*/
+alphazero_training/_v3*/
+alphazero_training/replay/
+alphazero_training/run*/
+
+# Frozen local training archives (kept in the project folder, not published)
+alphazero_training/v3g_archive_*/
+alphazero_training/v3g_archive_*.tar
+alphazero_training/v3g_archive_*_LOCAL_VALIDATION.txt
+
+# OS files
+Thumbs.db
+.DS_Store
