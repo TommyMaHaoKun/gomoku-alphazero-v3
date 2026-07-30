@@ -2,6 +2,8 @@
 
 A playable 19×19 Gomoku program built with Pygame and an AlphaZero-style AI. The player can choose black or white, while the AI combines a policy-value neural network, Monte Carlo Tree Search (MCTS), and exact tactical checks.
 
+The complete final-project report is available in [`summary.md`](summary.md).
+
 ## Features
 
 - Standard 19×19 Gomoku board with nine star points
