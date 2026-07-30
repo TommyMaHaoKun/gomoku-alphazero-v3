@@ -175,6 +175,18 @@ def main() -> int:
     if rendered.get_at((ui.x0 + load_game_module_cached.BOARD_SIZE, ui.y0))[:3] != (235, 0, 180):
         raise AssertionError("latest AI outline did not move")
 
+    # Undo removes one complete human turn, including the AI response, and
+    # restores move numbers, turn ownership, and the latest-AI highlight.
+    ui.mouse_down(*ui.undo_button.center)
+    if ui.grid[9][10] != 0 or ui.grid[0][1] != 0:
+        raise AssertionError("undo did not remove the latest human/AI pair")
+    if ui.grid[9][9] != 1 or ui.grid[0][0] != 2:
+        raise AssertionError("undo removed moves from an earlier turn")
+    if ui.move_count != 2 or ui.move_numbers[9][9] != 1 or ui.move_numbers[0][0] != 2:
+        raise AssertionError("undo did not restore move numbering")
+    if ui.turn != load_game_module_cached.GRID_BLACK or ui.last_ai_move != (0, 0):
+        raise AssertionError("undo did not restore turn/highlight state")
+
     ui.select_color(load_game_module_cached.GRID_WHITE)
     finish_ai_move()
     if ui.move_numbers[0][0] != 1:
@@ -183,7 +195,30 @@ def main() -> int:
     ui.draw(rendered)
     if rendered.get_at((ui.x0, ui.y0))[:3] != (235, 0, 180):
         raise AssertionError("black AI outline regression")
-    checked += 15
+    if ui.can_undo():
+        raise AssertionError("AI opening move must not be undoable by itself")
+
+    ui.mouse_down(center_x, center_y)
+    finish_ai_move()
+    ui.eventkey(pygame.K_BACKSPACE)
+    if ui.move_count != 1 or ui.grid[0][0] != 1 or ui.grid[9][9] != 0:
+        raise AssertionError("white-player undo did not preserve the AI opening")
+    if ui.turn != load_game_module_cached.GRID_WHITE or ui.last_ai_move != (0, 0):
+        raise AssertionError("white-player undo restored incorrect state")
+
+    # A result produced by an AI worker for the pre-undo board must be ignored.
+    ui.select_color(load_game_module_cached.GRID_BLACK)
+    ui.mouse_down(center_x, center_y)
+    if not ui.undo():
+        raise AssertionError("undo was unavailable while the AI was thinking")
+    time.sleep(0.05)
+    for _ in range(4):
+        ui.update()
+    if any(cell != 0 for row in ui.grid for cell in row):
+        raise AssertionError("stale AI result placed a stone after undo")
+    if ui.move_count != 0 or ui.ai_thinking or ui.turn != load_game_module_cached.GRID_BLACK:
+        raise AssertionError("undo during AI calculation restored incorrect state")
+    checked += 27
 
     print(f"play integration verified: {checked} tactical decisions passed")
     return 0

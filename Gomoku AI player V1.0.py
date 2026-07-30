@@ -269,6 +269,7 @@ class CLS_gomoku(object):
         self.turn = GRID_BLACK
         self.black_button = pygame.Rect(625,300,145,40)
         self.white_button = pygame.Rect(625,350,145,40)
+        self.undo_button = pygame.Rect(625,350,145,40)
         self.grid_init(None)
     def grid_init(self,human_color=None):
         self.grid = []
@@ -278,6 +279,7 @@ class CLS_gomoku(object):
             self.grid.append(line)
             self.move_numbers.append([0] * BOARD_ORDER)
         self.move_count = 0
+        self.move_history = []
         self.assessList = []
         for y in range(BOARD_ORDER):
             line = []
@@ -308,6 +310,49 @@ class CLS_gomoku(object):
         self.grid_init(human_color)
         if self.ai_color == GRID_BLACK:
             self._start_ai_move()
+    def can_undo(self):
+        return (
+            self.human_color in (GRID_BLACK,GRID_WHITE)
+            and any(color == self.human_color for _,_,color in self.move_history)
+        )
+    def undo(self):
+        """Undo the human's latest turn and the AI reply that followed it."""
+        if not self.can_undo():
+            return False
+
+        # Invalidate any move still being calculated on the old position.
+        self.game_generation += 1
+        self.ai_thinking = False
+
+        human_move_index = max(
+            index
+            for index,(_,_,color) in enumerate(self.move_history)
+            if color == self.human_color
+        )
+        for x,y,_ in self.move_history[human_move_index:]:
+            self.grid[y][x] = GRID_NULL
+        del self.move_history[human_move_index:]
+
+        self.move_numbers = [[0] * BOARD_ORDER for _ in range(BOARD_ORDER)]
+        for number,(x,y,_) in enumerate(self.move_history,start=1):
+            self.move_numbers[y][x] = number
+        self.move_count = len(self.move_history)
+        self.last_move = (
+            self.move_history[-1][:2] if self.move_history else None
+        )
+        self.last_ai_move = next(
+            (
+                (x,y)
+                for x,y,color in reversed(self.move_history)
+                if color == self.ai_color
+            ),
+            None,
+        )
+        self.winner = -1
+        self.sysStat = 0
+        self.turn = self.human_color
+        self.grid_assess()
+        return True
     def draw_chess(self,scr):
         for y in range(BOARD_ORDER):
             for x in range(BOARD_ORDER):
@@ -371,6 +416,7 @@ class CLS_gomoku(object):
         RT_draw_txt(scr,self.fontScore,(245,235,190),'R/Enter: restart',625,225)
         RT_draw_txt(scr,self.fontScore,(245,235,190),'S: show scores',625,245)
         RT_draw_txt(scr,self.fontScore,(245,235,190),'C: change color',625,265)
+        RT_draw_txt(scr,self.fontScore,(245,235,190),'U/Backspace: undo',625,285)
         if self.human_color is None:
             pygame.draw.rect(scr,(30,30,30),self.black_button)
             pygame.draw.rect(scr,(245,245,245),self.white_button)
@@ -379,6 +425,9 @@ class CLS_gomoku(object):
         else:
             color_name = 'BLACK (FIRST)' if self.human_color == GRID_BLACK else 'WHITE (SECOND)'
             RT_draw_txt(scr,self.fontScore,(245,235,190),'YOU: ' + color_name,625,313)
+            undo_color = (255,220,80) if self.can_undo() else (105,90,55)
+            pygame.draw.rect(scr,undo_color,self.undo_button)
+            RT_draw_txt(scr,self.fontScore,(25,25,25),'UNDO LAST TURN',638,363)
         if self.sysStat == 1:
             txt,cls = 'YOU WIN!!!',(255,0,0)
             if self.winner == self.ai_color:
@@ -484,6 +533,7 @@ class CLS_gomoku(object):
         self.grid[ai_y][ai_x] = self.ai_color
         self.move_count += 1
         self.move_numbers[ai_y][ai_x] = self.move_count
+        self.move_history.append((ai_x,ai_y,self.ai_color))
         self.last_move = (ai_x,ai_y)
         self.last_ai_move = (ai_x,ai_y)
         if is_five(self.grid,ai_x,ai_y,self.ai_color):
@@ -505,6 +555,9 @@ class CLS_gomoku(object):
             elif self.white_button.collidepoint(mx,my):
                 self.select_color(GRID_WHITE)
             return
+        if self.undo_button.collidepoint(mx,my):
+            self.undo()
+            return
         if self.sysStat == 1 or self.ai_thinking or self.turn != self.human_color:
             return
         x = round((mx - self.x0 - BOARD_X0) / BOARD_SIZE)
@@ -517,6 +570,7 @@ class CLS_gomoku(object):
         self.grid[y][x] = self.human_color
         self.move_count += 1
         self.move_numbers[y][x] = self.move_count
+        self.move_history.append((x,y,self.human_color))
         self.last_move = (x,y)
         if is_five(self.grid, x, y, self.human_color):
             self.winner = self.human_color
@@ -540,6 +594,9 @@ class CLS_gomoku(object):
             return
         if key == pygame.K_c:
             self.grid_init(None)
+            return
+        if key in (pygame.K_u,pygame.K_BACKSPACE):
+            self.undo()
             return
         if key in (pygame.K_RETURN,pygame.K_r):
             self.grid_init(self.human_color)
