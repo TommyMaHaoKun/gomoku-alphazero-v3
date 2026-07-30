@@ -23,6 +23,31 @@ root children and MCTS ranks the actual move; the returned tactical label is
 still uniform over the exact safe set.  If the opponent already has multiple
 immediate winning points, the fallback is uniform over the legal one-point
 blocks but is explicitly marked as an unproven, unavoidable loss.
+
+Architecture / 代码架构
+-----------------------
+``V3RootSearch`` is the shared decision engine used by both training and the
+desktop player. It first routes each position through short exact tactics,
+then sends unresolved positions into one batched policy-value MCTS wave.
+``SearchDecision`` returns both the played action and the normalized policy
+target needed by replay training.
+
+``V3RootSearch`` 是训练端与桌面端共用的决策引擎。它先让每个局面经过短期精确
+战术路由，再把仍未解决的局面合并进一轮批量策略-价值 MCTS。``SearchDecision``
+同时返回实际落子和回放训练所需的归一化策略目标。
+
+Key algorithms / 重要算法
+-------------------------
+Priority is: immediate win, mandatory block, win in three, exact safe defense,
+then ordinary MCTS. Optional bounded VCF/VCT guards may reject only moves that
+are proven losing; ``UNKNOWN_BUDGET`` is never treated as a loss. In ordinary
+search, 256 simulations mean 256 tree traversals, not a fixed depth of 256
+moves, and the root action with the strongest visit evidence is selected.
+
+优先级依次为：一步必胜、必须封堵、三手强制胜、安全防守集合、普通 MCTS。可选的
+有限 VCF/VCT 保护只排除已经证明会输的走法，``UNKNOWN_BUDGET`` 绝不当作失败。
+普通搜索中的 256 次模拟表示 256 次树遍历，不是固定向后搜索 256 手；最终根据
+根节点访问证据选择落子。
 """
 
 from __future__ import annotations

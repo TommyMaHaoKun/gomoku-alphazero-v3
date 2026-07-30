@@ -1,5 +1,30 @@
 #!/usr/bin/env python3
-"""Regression checks for the Windows Pygame inference integration."""
+"""Windows Pygame integration regression checks / Windows 游戏集成回归测试。
+
+Architecture / 代码架构
+-----------------------
+The script imports the real Pygame program without starting its interactive
+loop, loads the published ``latest.pt`` through ``AlphaZeroGomokuAgent``, and
+tests the same board-to-agent-to-interface path used during actual play.
+
+本脚本在不启动交互循环的情况下导入真实 Pygame 程序，通过
+``AlphaZeroGomokuAgent`` 加载正式 ``latest.pt``，并测试实际游玩所使用的
+“棋盘-智能体-界面”完整路径。
+
+Key algorithms and the 159 count / 重要算法与 159 的来源
+-------------------------------------------------------
+Programmatically generated straight and broken fours are tested from both
+color viewpoints through both the UI guard and full agent (128 checks). Two
+previous missed-block boards are tested through both paths (4 checks). A final
+group covers star points, move numbering, color choice, AI highlighting, undo,
+and stale-thread rejection (27 checks). Thus 128 + 4 + 27 = 159 integration
+checks. This number measures software regression coverage, not playing strength.
+
+程序自动生成直四与断四，并从黑白双方视角分别测试界面保护和完整 AI（128 项）；
+两个曾经漏堵的棋盘同样测试两条路径（4 项）；最后一组检查星位、编号、选色、AI
+方框、悔棋和过期线程结果（27 项）。因此 128 + 4 + 27 = 159 项集成检查。
+这个数字衡量软件回归覆盖，不代表棋力或胜率。
+"""
 
 from __future__ import annotations
 

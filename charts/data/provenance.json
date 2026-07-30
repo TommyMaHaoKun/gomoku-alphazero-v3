@@ -1,0 +1,11 @@
+{
+  "source_archive": "v3g_archive_20260730_i100",
+  "warmup_points": 33,
+  "selfplay_iterations": 100,
+  "evaluation_snapshots": 20,
+  "notes": [
+    "Training loss is an optimization metric, not direct playing strength.",
+    "Integration checks measure software behavior, not match win rate.",
+    "The experimental 100-iteration candidate was not promoted over Gargantua V2."
+  ]
+}

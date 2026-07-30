@@ -16,6 +16,31 @@ defensive reply that averts that threat is enumerated.  Consequently a
 ``PROVEN_WIN`` is a sound forced win, while ``PROVEN_NO_VCT`` only excludes a
 win inside this bounded threat-space definition.  Candidate, defense, node,
 or wall-clock exhaustion returns ``UNKNOWN_BUDGET`` instead of a false loss.
+
+Architecture / 代码架构
+-----------------------
+``FreestyleBoard`` is an immutable rule-only board. Small helper functions
+handle immediate and three-ply tactics. Separate bounded search engines prove
+VCF and conservative VCT sequences. ``TacticalSolver`` is the public facade
+used by training, evaluation, and desktop search; it has no neural-network or
+Pygame dependency.
+
+``FreestyleBoard`` 是不可变的纯规则棋盘；小型函数处理一步与三手战术；两个独立的
+有限搜索器分别证明 VCF 和保守 VCT。``TacticalSolver`` 是训练、评估和桌面搜索共用
+的公开接口，不依赖神经网络或 Pygame。
+
+Key algorithms / 重要算法
+-------------------------
+Immediate-win enumeration tests every legal winning point. Three-ply search
+checks attacker-defender-attacker forcing lines. VCF proves wins made from
+continuous fours; VCT explores a broader but conservative threat space. Every
+query has ply, node, and optional time limits. Only ``PROVEN_WIN`` is a proof;
+budget exhaustion returns ``UNKNOWN_BUDGET`` so uncertainty is not mislabeled.
+
+一步胜点枚举会检查所有合法获胜位置；三手搜索检查“进攻-防守-进攻”的强制路线；
+VCF 证明连续冲四胜，VCT 搜索更广但仍保守的威胁空间。每次查询都有手数、节点数
+和可选时间限制。只有 ``PROVEN_WIN`` 才是胜利证明；预算耗尽返回
+``UNKNOWN_BUDGET``，避免把“没算完”误判为输棋。
 """
 
 from __future__ import annotations
