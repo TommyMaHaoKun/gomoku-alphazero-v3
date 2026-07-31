@@ -14,6 +14,8 @@ The complete final-project report is available in [`summary.md`](summary.md).
 - Policy-value network guided MCTS
 - Automatic CPU/GPU inference selection
 - Current model and MCTS configuration shown in the game window
+- Automatic move-by-move game logging in AlphaZero replay format
+- Separate pending-training library for games lost by the AI
 
 ## Libraries
 
@@ -56,6 +58,20 @@ The default desktop search budget is 256 MCTS simulations per move. It can be ch
 $env:GOMOKU_MCTS_SIMULATIONS = "128"
 python "Gomoku AI player V1.0.py"
 ```
+
+## Game Logs and Pending Training Games
+
+Every desktop game is archived under `alphazero_training/play_logs/all_games/`.
+Each game has a readable JSON move list and a compressed NPZ replay containing
+the same five core arrays as V3 self-play: `states`, `policies`, `values`,
+`policy_weights`, and `value_weights`. Human and AI actions use one-hot played-
+move policy targets. If a game is restarted, its known moves are retained while
+the unknown result is masked with zero value weights.
+
+When the human wins, the matching JSON and NPZ files are also copied to
+`alphazero_training/play_logs/pending_training/ai_losses/`. This is a review
+queue for later training; playing the game does not automatically change or
+retrain the deployed model.
 
 ## AI Method
 

@@ -14,6 +14,8 @@ from alphazero_training.train_v3_supervised import (
     concatenate_batch,
     configure_selective_freeze,
     evaluate,
+    mistake_hard_negative_margin_loss,
+    d4_augment_batch,
     policy_distillation_kl,
     resolve_dataset_mix,
     safe_hard_negative_margin_loss,
@@ -24,7 +26,13 @@ from alphazero_training.train_v3_supervised import (
 )
 
 
-def _write_pool(path: Path, *, white_defense: bool, split: str = "train") -> None:
+def _write_pool(
+    path: Path,
+    *,
+    white_defense: bool,
+    split: str = "train",
+    mistake: bool = False,
+) -> None:
     count = 2
     states = np.zeros((count, 4, 19, 19), dtype=np.uint8)
     policies = np.zeros((count, 361), dtype=np.float32)
@@ -53,6 +61,8 @@ def _write_pool(path: Path, *, white_defense: bool, split: str = "train") -> Non
         states[:, 3].fill(1)
         policies[:, 180] = 1.0
         value_weights = np.ones(count, dtype=np.float32)
+        if mistake:
+            arrays["mistake_action"] = np.full(count, 179, dtype=np.int16)
     np.savez_compressed(
         path,
         states=states,
@@ -68,6 +78,38 @@ def _write_pool(path: Path, *, white_defense: bool, split: str = "train") -> Non
 
 
 class PolicyDistillationTests(unittest.TestCase):
+    def test_mistake_margin_pushes_teacher_above_recorded_error(self) -> None:
+        logits = torch.tensor([[0.0, 1.0, 2.0]], requires_grad=True)
+        targets = torch.tensor([[0.0, 1.0, 0.0]])
+        loss = mistake_hard_negative_margin_loss(
+            logits,
+            targets,
+            torch.ones(1),
+            torch.tensor([2]),
+            margin=1.0,
+        )
+        self.assertEqual(2.0, float(loss.detach()))
+        loss.backward()
+        self.assertLess(float(logits.grad[0, 1]), 0.0)
+        self.assertGreater(float(logits.grad[0, 2]), 0.0)
+
+        satisfied = mistake_hard_negative_margin_loss(
+            torch.tensor([[0.0, 3.0, 1.0]], requires_grad=True),
+            targets,
+            torch.ones(1),
+            torch.tensor([2]),
+            margin=1.0,
+        )
+        self.assertEqual(0.0, float(satisfied.detach()))
+
+    def test_dataset_pool_carries_grouped_mistake_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mistakes.npz"
+            _write_pool(path, white_defense=False, mistake=True)
+            pool = DatasetPool(path, seed=7, validation_fraction=0.0)
+            self.assertEqual(2, pool.manifest()["mistake_rows"])
+            self.assertTrue(np.all(pool.sample(4)["mistake_actions"] == 179))
+
     def test_zero_scale_preserves_loss_and_student_gradient(self) -> None:
         student_reference = torch.tensor(
             [[1.2, -0.4, 0.3], [-0.7, 1.1, 0.2]], requires_grad=True
@@ -292,9 +334,11 @@ class WhiteDefenseSupervisedTests(unittest.TestCase):
                 policy_distill_scale=0.3,
                 freeze_trunk_steps=300,
                 train_last_residual_blocks_during_freeze=2,
+                random_d4_augmentation=True,
             )
             checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         self.assertEqual(300, checkpoint["warmstart_config"]["freeze_trunk_steps"])
+        self.assertTrue(checkpoint["warmstart_config"]["random_d4_augmentation"])
         self.assertEqual(
             0.0,
             checkpoint["warmstart_config"]["safe_hard_negative_scale"],
@@ -354,6 +398,39 @@ class WhiteDefenseSupervisedTests(unittest.TestCase):
             pool = DatasetPool(path, seed=7, validation_fraction=0.0)
             self.assertEqual(2, len(pool.training_indices))
             self.assertEqual(0, len(pool.validation_indices))
+
+    def test_d4_augmentation_keeps_state_policy_and_mistake_aligned(self) -> None:
+        states = np.zeros((2, 4, 19, 19), dtype=np.uint8)
+        policies = np.zeros((2, 361), dtype=np.float32)
+        safe_masks = np.zeros((2, 361), dtype=bool)
+        candidate_masks = np.zeros((2, 361), dtype=bool)
+        teacher_actions = np.asarray([2 * 19 + 3, 5 * 19 + 7])
+        mistake_actions = np.asarray([4 * 19 + 6, 8 * 19 + 9], dtype=np.int16)
+        for row, action in enumerate(teacher_actions):
+            y, x = divmod(int(action), 19)
+            states[row, 0, y, x] = 1
+            policies[row, action] = 1.0
+            safe_masks[row, action] = True
+            candidate_masks[row, action] = True
+        batch = {
+            "states": states,
+            "policies": policies,
+            "values": np.asarray([1.0, -1.0], dtype=np.float32),
+            "policy_weights": np.ones(2, dtype=np.float32),
+            "value_weights": np.ones(2, dtype=np.float32),
+            "safe_masks": safe_masks,
+            "candidate_masks": candidate_masks,
+            "safe_set_rows": np.zeros(2, dtype=bool),
+            "mistake_actions": mistake_actions,
+        }
+        transformed = d4_augment_batch(batch, np.asarray([1, 6], dtype=np.int8))
+        for row in range(2):
+            action = int(np.argmax(transformed["policies"][row]))
+            y, x = divmod(action, 19)
+            self.assertEqual(1, transformed["states"][row, 0, y, x])
+            self.assertTrue(transformed["safe_masks"][row, action])
+            self.assertTrue(transformed["candidate_masks"][row, action])
+        self.assertEqual([128, 199], transformed["mistake_actions"].tolist())
 
     def test_eval_npz_is_never_accepted_by_supervised_pool(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

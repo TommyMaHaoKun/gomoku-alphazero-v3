@@ -1,0 +1,10 @@
+{
+  "desktop_move14_passed": true,
+  "desktop_teacher_rank": 1,
+  "desktop_teacher_probability": 0.4245220720767975,
+  "raw_tactics": 47,
+  "deployed_tactics": 48,
+  "white_safe_count": 16,
+  "white_safe_probability_mass": 0.7707617002141821,
+  "passed_static_and_exact": true
+}

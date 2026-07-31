@@ -239,7 +239,7 @@ class CLS_gomoku(object):
                     5,
                 )
         return
-    def __init__(self,bPic,wPic,x0,y0,ai_agent=None):
+    def __init__(self,bPic,wPic,x0,y0,ai_agent=None,game_logger=None):
         self.bMan,self.wMan = bPic,wPic
         self.font = pygame.font.Font(None,32)
         self.fontScore = pygame.font.Font(None,16)
@@ -253,6 +253,8 @@ class CLS_gomoku(object):
         self.ai_results = queue.Queue()
         self.ai_thinking = False
         self.game_generation = 0
+        self.game_logger = game_logger
+        self._game_logged = False
         self.ai_label = ai_agent.label if ai_agent is not None else 'Heuristic fallback'
         self.ai_model_label = (
             getattr(ai_agent,'model_label',self.ai_label)
@@ -303,10 +305,12 @@ class CLS_gomoku(object):
         self.ai_thinking = False
         self.winner = -1
         self.sysStat = 0
+        self._game_logged = False
         return
     def select_color(self,human_color):
         if human_color not in (GRID_BLACK,GRID_WHITE):
             return
+        self._archive_unfinished_game('color_changed')
         self.grid_init(human_color)
         if self.ai_color == GRID_BLACK:
             self._start_ai_move()
@@ -350,9 +354,53 @@ class CLS_gomoku(object):
         )
         self.winner = -1
         self.sysStat = 0
+        self._game_logged = False
         self.turn = self.human_color
         self.grid_assess()
         return True
+
+    def _archive_game(self,winner,termination):
+        if (
+            self._game_logged
+            or self.game_logger is None
+            or not self.move_history
+            or self.ai_color not in (GRID_BLACK,GRID_WHITE)
+        ):
+            return None
+        # Mark first so a disk error cannot cause duplicate archives later.
+        self._game_logged = True
+        try:
+            saved = self.game_logger.record_game(
+                self.move_history,
+                winner=winner,
+                ai_color=self.ai_color,
+                model_label=self.ai_model_label,
+                search_label=self.ai_search_label,
+                termination=termination,
+            )
+            print('Game replay saved:',saved.replay_path)
+            if saved.pending_replay_path is not None:
+                print('AI loss added to pending training library:',saved.pending_replay_path)
+            return saved
+        except Exception as exc:
+            print('Could not save game replay:',exc)
+            return None
+
+    def _archive_unfinished_game(self,termination):
+        if self.sysStat != 1:
+            return self._archive_game(None,termination)
+        return None
+
+    def _finish_game(self,winner,message=None):
+        self.winner = winner
+        self.sysStat = 1
+        if message:
+            print(message)
+        return self._archive_game(winner,'completed')
+
+    def close(self):
+        """Archive an in-progress game before the application exits."""
+        self._archive_unfinished_game('window_closed')
     def draw_chess(self,scr):
         for y in range(BOARD_ORDER):
             for x in range(BOARD_ORDER):
@@ -526,8 +574,7 @@ class CLS_gomoku(object):
         or self.grid[ai_y][ai_x] != GRID_NULL:
             fallback = choose_ai_move(self.grid,self.ai_color)
             if fallback is None:
-                self.winner = GRID_NULL
-                self.sysStat = 1
+                self._finish_game(GRID_NULL)
                 return
             ai_x,ai_y = fallback
         self.grid[ai_y][ai_x] = self.ai_color
@@ -537,13 +584,10 @@ class CLS_gomoku(object):
         self.last_move = (ai_x,ai_y)
         self.last_ai_move = (ai_x,ai_y)
         if is_five(self.grid,ai_x,ai_y,self.ai_color):
-            self.winner = self.ai_color
-            self.sysStat = 1
-            print('You lose!!!')
+            self._finish_game(self.ai_color,'You lose!!!')
             return
         if board_full(self.grid):
-            self.winner = GRID_NULL
-            self.sysStat = 1
+            self._finish_game(GRID_NULL)
             return
         self.turn = self.human_color
         self.grid_assess()
@@ -573,13 +617,10 @@ class CLS_gomoku(object):
         self.move_history.append((x,y,self.human_color))
         self.last_move = (x,y)
         if is_five(self.grid, x, y, self.human_color):
-            self.winner = self.human_color
-            self.sysStat = 1
-            print('You win!!!')
+            self._finish_game(self.human_color,'You win!!!')
             return
         if board_full(self.grid):
-            self.winner = GRID_NULL
-            self.sysStat = 1
+            self._finish_game(GRID_NULL)
             return
 
         self.turn = self.ai_color
@@ -593,12 +634,14 @@ class CLS_gomoku(object):
             self.select_color(GRID_WHITE)
             return
         if key == pygame.K_c:
+            self._archive_unfinished_game('color_selection_requested')
             self.grid_init(None)
             return
         if key in (pygame.K_u,pygame.K_BACKSPACE):
             self.undo()
             return
         if key in (pygame.K_RETURN,pygame.K_r):
+            self._archive_unfinished_game('restarted')
             self.grid_init(self.human_color)
             if self.ai_color == GRID_BLACK:
                 self._start_ai_move()
@@ -618,6 +661,8 @@ def main():
     bPic = pygame.image.load(str(asset_dir / 'BCMan.bmp'))
     bPic.set_colorkey((255,0,0))
     ai_agent = None
+    from alphazero_training.game_logger import GameReplayLogger
+    game_logger = GameReplayLogger(asset_dir / 'alphazero_training' / 'play_logs')
     checkpoint_path = asset_dir / 'alphazero_training' / 'latest.pt'
     try:
         from alphazero_training.play_agent import AlphaZeroGomokuAgent
@@ -628,7 +673,7 @@ def main():
         print('Loaded:',ai_agent.label,'checkpoint iteration',ai_agent.iteration)
     except Exception as exc:
         print('Could not load AlphaZero model; using heuristic AI:',exc)
-    gomoku = CLS_gomoku(bPic,wPic,30,80,ai_agent)
+    gomoku = CLS_gomoku(bPic,wPic,30,80,ai_agent,game_logger)
     clock = pygame.time.Clock()
 
     running = True
@@ -645,6 +690,7 @@ def main():
         pygame.display.update()
         clock.tick(60)
 
+    gomoku.close()
     pygame.quit()
     return 0
 
