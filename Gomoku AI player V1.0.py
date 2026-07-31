@@ -26,6 +26,7 @@ Key algorithms / 重要算法
 
 from pathlib import Path
 import math
+import os
 import queue
 import threading
 
@@ -41,37 +42,108 @@ APP_CAPTION = 'Gargantua - Gomoku AI'
 # ---------------------------------------------------------------------------
 # Layout / 版面
 # ---------------------------------------------------------------------------
-# Everything is laid out in logical pixels at a comfortable desktop size.  The
-# whole frame is rendered onto one canvas and scaled down only if the physical
-# display cannot fit it, so the interface stays sharp on high-DPI screens.
+# The interface is designed in the base units below and then drawn natively at
+# ``UI_SCALE`` times that size: every rectangle, line, glyph and stone is
+# rendered at its final pixel size, so nothing is ever bitmap-scaled.  A
+# stretched bitmap is either blurry (linear) or jagged (nearest); rendering at
+# the target size avoids both.
 #
-# 界面按逻辑像素排版；整帧先绘制到画布，只有当显示器装不下时才整体缩放，
-# 因此在高分屏上依然锐利。
+# 界面先用下面的基准单位排版，再按 UI_SCALE 原生绘制：矩形、线条、文字和棋子
+# 都直接以最终像素尺寸生成，全程不做位图缩放。位图放大要么发虚（线性插值）
+# 要么有锯齿（最近邻），原生绘制两者都不会出现。
 BOARD_ORDER = 19
-BOARD_SIZE = 38                     # grid pitch / 棋盘格距
-BOARD_PAD = 36                      # quiet zone inside the board card
+BASE_CELL = 38                      # grid pitch / 棋盘格距
+BASE_PAD = 36                       # quiet zone inside the board card
+BASE_MARGIN = 44
+BASE_GAP = 32
+BASE_PANEL_W = 392
+BASE_BOARD_SURF = (BOARD_ORDER - 1) * BASE_CELL + BASE_PAD * 2
+BASE_WIDTH = BASE_MARGIN * 2 + BASE_BOARD_SURF + BASE_GAP + BASE_PANEL_W
+BASE_HEIGHT = BASE_MARGIN * 2 + BASE_BOARD_SURF
+
+
+def enable_dpi_awareness():
+    """Ask Windows for real pixels so the window is not bitmap-stretched.
+
+    在 Windows 上声明 DPI 感知，避免系统把窗口放大导致模糊。
+    """
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def detect_ui_scale():
+    """How many physical pixels one design unit should occupy.
+
+    A DPI-aware window is measured in physical pixels, so on a 200% display a
+    1:1 frame would cover only a quarter of the screen.  The display scaling
+    factor is therefore used as the drawing scale, clamped so the window still
+    fits the desktop.  ``GOMOKU_UI_SCALE`` overrides it.
+
+    DPI 感知的窗口以物理像素计量，200% 缩放下 1:1 的画面只占屏幕四分之一。
+    因此这里以系统缩放比例作为绘制倍率，并限制在桌面放得下的范围内。
+    可用环境变量 ``GOMOKU_UI_SCALE`` 覆盖。
+    """
+    override = os.environ.get('GOMOKU_UI_SCALE')
+    if override:
+        try:
+            return max(0.5,min(float(override),4.0))
+        except ValueError:
+            print('Ignoring invalid GOMOKU_UI_SCALE:',override)
+    if sys.platform != 'win32':
+        return 1.0
+    enable_dpi_awareness()
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        scale = user32.GetDpiForSystem() / 96.0
+        screen_w,screen_h = user32.GetSystemMetrics(0),user32.GetSystemMetrics(1)
+    except Exception:
+        return 1.0
+    # Leave room for the title bar and the taskbar.
+    scale = min(scale,(screen_w - 48) / BASE_WIDTH,(screen_h - 120) / BASE_HEIGHT)
+    return max(0.6,min(scale,3.0))
+
+
+UI_SCALE = detect_ui_scale()
+
+
+def S(value):
+    """Convert a design unit into physical pixels. 把设计单位换算成物理像素。"""
+    return int(round(value * UI_SCALE))
+
+
+BOARD_SIZE = S(BASE_CELL)           # grid pitch / 棋盘格距
+BOARD_PAD = S(BASE_PAD)
 BOARD_X0,BOARD_Y0 = BOARD_PAD,BOARD_PAD
 BOARD_SPAN = (BOARD_ORDER - 1) * BOARD_SIZE
 BOARD_SURF = BOARD_SPAN + BOARD_PAD * 2
-STONE_D = BOARD_SIZE - 3
-MARGIN = 44
+STONE_D = BOARD_SIZE - S(3)
+MARGIN = S(BASE_MARGIN)
 BOARD_X,BOARD_Y = MARGIN,MARGIN
-PANEL_GAP = 32
+PANEL_GAP = S(BASE_GAP)
 PANEL_X = BOARD_X + BOARD_SURF + PANEL_GAP
-PANEL_W = 392
+PANEL_W = S(BASE_PANEL_W)
 SCREEN_WIDTH = PANEL_X + PANEL_W + MARGIN
 SCREEN_HEIGHT = BOARD_Y + BOARD_SURF + MARGIN
 
 # Side panel rhythm, top to bottom / 右侧信息栏的纵向节奏
-MARK_SIZE = 60
+MARK_SIZE = S(60)
 MARK_Y = MARGIN
-WORD_Y = 112
-TAG_Y = 172
-RULE_Y = 198
-BTN_H = 48
-BTN_ROW1_Y = 529
-BTN_ROW2_Y = 589
-KEYS_Y = 683
+WORD_Y = S(112)
+TAG_Y = S(172)
+RULE_Y = S(198)
+BTN_H = S(48)
+BTN_ROW1_Y = S(529)
+BTN_ROW2_Y = S(589)
+KEYS_Y = S(683)
 
 # ---------------------------------------------------------------------------
 # Palette / 配色
@@ -500,27 +572,28 @@ class CLS_gomoku(object):
     def draw_board(self):
         """Pre-render the static board: paper, grid, star points, coordinates."""
         self.board = pygame.Surface((BOARD_SURF,BOARD_SURF),pygame.SRCALPHA)
-        pygame.draw.rect(self.board,BOARD_BG,self.board.get_rect(),border_radius=18)
+        pygame.draw.rect(self.board,BOARD_BG,self.board.get_rect(),border_radius=S(18))
         o,L = BOARD_X0,BOARD_X0 + BOARD_SPAN
+        hair = max(1,S(1))
         for i in range(BOARD_ORDER):
             p = o + i * BOARD_SIZE
-            pygame.draw.line(self.board,BOARD_LINE,(o,p),(L,p),1)
-            pygame.draw.line(self.board,BOARD_LINE,(p,o),(p,L),1)
+            pygame.draw.line(self.board,BOARD_LINE,(o,p),(L,p),hair)
+            pygame.draw.line(self.board,BOARD_LINE,(p,o),(p,L),hair)
         pygame.draw.rect(self.board,_lerp(BOARD_LINE,INK,0.30),
-                         (o,o,BOARD_SPAN,BOARD_SPAN),2)
+                         (o,o,BOARD_SPAN,BOARD_SPAN),max(2,S(2)))
         for star_y in (3,9,15):
             for star_x in (3,9,15):
                 aa_circle(self.board,BOARD_STAR,
-                          (o + star_x * BOARD_SIZE,o + star_y * BOARD_SIZE),4)
+                          (o + star_x * BOARD_SIZE,o + star_y * BOARD_SIZE),S(4))
         label_color = _lerp(BOARD_LINE,INK,0.35)
         half = self.fontCoord.get_height() // 2
         for i in range(BOARD_ORDER):
             p = o + i * BOARD_SIZE
             letter,number = chr(ord('A') + i),str(i + 1)
-            draw_text(self.board,self.fontCoord,label_color,letter,p,o - 25,'center')
-            draw_text(self.board,self.fontCoord,label_color,letter,p,L + 9,'center')
-            draw_text(self.board,self.fontCoord,label_color,number,o - 13,p - half,'right')
-            draw_text(self.board,self.fontCoord,label_color,number,L + 13,p - half)
+            draw_text(self.board,self.fontCoord,label_color,letter,p,o - S(25),'center')
+            draw_text(self.board,self.fontCoord,label_color,letter,p,L + S(9),'center')
+            draw_text(self.board,self.fontCoord,label_color,number,o - S(13),p - half,'right')
+            draw_text(self.board,self.fontCoord,label_color,number,L + S(13),p - half)
         return
 
     def _build_backdrop(self):
@@ -529,31 +602,33 @@ class CLS_gomoku(object):
         scr = self.backdrop
         scr.fill(BG)
 
+        hair = max(1,S(1))
         board_rect = pygame.Rect(self.x0,self.y0,BOARD_SURF,BOARD_SURF)
-        shadow = make_shadow(board_rect.size,18,spread=14,alpha=5,offset=6)
-        scr.blit(shadow,(board_rect.x - 14,board_rect.y - 14))
+        shadow = make_shadow(board_rect.size,S(18),spread=S(14),alpha=5,offset=S(6))
+        scr.blit(shadow,(board_rect.x - S(14),board_rect.y - S(14)))
         scr.blit(self.board,board_rect.topleft)
 
         scr.blit(self.mark,(PANEL_X,MARK_Y))
-        draw_text(scr,self.fontWord,INK,APP_TITLE,PANEL_X - 2,WORD_Y)
-        draw_tracked(scr,self.fontLabel,ACCENT,APP_TAGLINE,PANEL_X,TAG_Y,tracking=3)
-        pygame.draw.line(scr,BORDER,(PANEL_X,RULE_Y),(PANEL_X + PANEL_W,RULE_Y),1)
+        draw_text(scr,self.fontWord,INK,APP_TITLE,PANEL_X - S(2),WORD_Y)
+        draw_tracked(scr,self.fontLabel,ACCENT,APP_TAGLINE,PANEL_X,TAG_Y,tracking=S(3))
+        pygame.draw.line(scr,BORDER,(PANEL_X,RULE_Y),(PANEL_X + PANEL_W,RULE_Y),hair)
 
         for rect in (self.status_card,self.model_card,self.stats_card):
-            scr.blit(make_shadow(rect.size,16),(rect.x - 10,rect.y - 10))
+            scr.blit(make_shadow(rect.size,S(16),spread=S(10),offset=S(4)),
+                     (rect.x - S(10),rect.y - S(10)))
             draw_card(scr,rect)
 
         draw_tracked(scr,self.fontLabel,INK_MUTED,'STATUS',
-                     self.status_card.x + 20,self.status_card.y + 18,tracking=2)
+                     self.status_card.x + S(20),self.status_card.y + S(18),tracking=S(2))
         draw_tracked(scr,self.fontLabel,INK_MUTED,'ENGINE',
-                     self.model_card.x + 20,self.model_card.y + 18,tracking=2)
+                     self.model_card.x + S(20),self.model_card.y + S(18),tracking=S(2))
         pygame.draw.line(scr,HAIRLINE,
-                         (self.stats_card.centerx,self.stats_card.y + 18),
-                         (self.stats_card.centerx,self.stats_card.bottom - 18),1)
+                         (self.stats_card.centerx,self.stats_card.y + S(18)),
+                         (self.stats_card.centerx,self.stats_card.bottom - S(18)),hair)
 
-        pygame.draw.line(scr,BORDER,(PANEL_X,KEYS_Y - 22),
-                         (PANEL_X + PANEL_W,KEYS_Y - 22),1)
-        draw_tracked(scr,self.fontLabel,INK_MUTED,'SHORTCUTS',PANEL_X,KEYS_Y,tracking=2)
+        pygame.draw.line(scr,BORDER,(PANEL_X,KEYS_Y - S(22)),
+                         (PANEL_X + PANEL_W,KEYS_Y - S(22)),hair)
+        draw_tracked(scr,self.fontLabel,INK_MUTED,'SHORTCUTS',PANEL_X,KEYS_Y,tracking=S(2))
         keys = (
             ('B / W','choose your color'),
             ('U / Bksp','undo your last turn'),
@@ -562,36 +637,40 @@ class CLS_gomoku(object):
             ('S','toggle shape scores'),
         )
         for row,(key,meaning) in enumerate(keys):
-            y = KEYS_Y + 22 + row * 20
+            y = KEYS_Y + S(22) + row * S(20)
             draw_text(scr,self.fontKey,INK_SOFT,key,PANEL_X,y)
-            draw_text(scr,self.fontHint,INK_MUTED,meaning,PANEL_X + 92,y + 1)
+            draw_text(scr,self.fontHint,INK_MUTED,meaning,PANEL_X + S(92),y + S(1))
         return
 
     def __init__(self,bPic,wPic,x0=BOARD_X,y0=BOARD_Y,ai_agent=None,game_logger=None):
         self.bMan,self.wMan = bPic,wPic
-        self.fontCoord = load_font(SANS,12)
-        self.fontLabel = load_font(SANS_MED,11)
-        self.fontScore = load_font(SANS,11)
-        self.fontMove = load_font(SANS,13)
-        self.fontHint = load_font(SANS,13)
-        self.fontKey = load_font(SANS_MED,13)
-        self.fontBody = load_font(SANS,14)
-        self.fontValue = load_font(SANS_MED,17)
-        self.fontStatus = load_font(SANS_MED,22)
-        self.fontButton = load_font(SANS_MED,15)
-        self.fontWord = load_font(SERIF,44)
-        self.fontWin = load_font(SERIF,42)
+        # Small stones for the identity pill; downscaling stays smooth.
+        chip_d = S(22)
+        self.bChip = pygame.transform.smoothscale(bPic,(chip_d,chip_d))
+        self.wChip = pygame.transform.smoothscale(wPic,(chip_d,chip_d))
+        self.fontCoord = load_font(SANS,S(12))
+        self.fontLabel = load_font(SANS_MED,S(11))
+        self.fontScore = load_font(SANS,S(11))
+        self.fontMove = load_font(SANS,S(13))
+        self.fontHint = load_font(SANS,S(13))
+        self.fontKey = load_font(SANS_MED,S(13))
+        self.fontBody = load_font(SANS,S(14))
+        self.fontValue = load_font(SANS_MED,S(17))
+        self.fontStatus = load_font(SANS_MED,S(22))
+        self.fontButton = load_font(SANS_MED,S(15))
+        self.fontWord = load_font(SERIF,S(44))
+        self.fontWin = load_font(SERIF,S(42))
         self.font = self.fontBody
         self.x0,self.y0 = x0,y0
         self.mark = make_black_hole(MARK_SIZE)
-        self.status_card = pygame.Rect(PANEL_X,214,PANEL_W,88)
-        self.model_card = pygame.Rect(PANEL_X,314,PANEL_W,104)
-        self.stats_card = pygame.Rect(PANEL_X,430,PANEL_W,78)
+        self.status_card = pygame.Rect(PANEL_X,S(214),PANEL_W,S(88))
+        self.model_card = pygame.Rect(PANEL_X,S(314),PANEL_W,S(104))
+        self.stats_card = pygame.Rect(PANEL_X,S(430),PANEL_W,S(78))
         self.black_button = pygame.Rect(PANEL_X,BTN_ROW1_Y,PANEL_W,BTN_H)
         self.white_button = pygame.Rect(PANEL_X,BTN_ROW2_Y,PANEL_W,BTN_H)
-        self.undo_button = pygame.Rect(PANEL_X,BTN_ROW2_Y,PANEL_W // 2 - 7,BTN_H)
+        self.undo_button = pygame.Rect(PANEL_X,BTN_ROW2_Y,PANEL_W // 2 - S(7),BTN_H)
         self.restart_button = pygame.Rect(
-            PANEL_X + PANEL_W // 2 + 7,BTN_ROW2_Y,PANEL_W // 2 - 7,BTN_H
+            PANEL_X + PANEL_W // 2 + S(7),BTN_ROW2_Y,PANEL_W // 2 - S(7),BTN_H
         )
         self.mouse = (-1,-1)
         self.hover_cell = None
@@ -785,18 +864,18 @@ class CLS_gomoku(object):
                         if pnt.bAssess > 0 or pnt.bValue > 0:
                             RT_draw_txt(scr,self.fontScore,(48,45,41),
                                         str(pnt.bAssess) + ',' + str(pnt.bValue),
-                                        cx - 17,cy - 13)
+                                        cx - S(17),cy - S(13))
                         if pnt.wAssess > 0 or pnt.wValue > 0:
                             RT_draw_txt(scr,self.fontScore,(250,249,245),
                                         str(pnt.wAssess) + ',' + str(pnt.wValue),
-                                        cx - 17,cy + 1)
+                                        cx - S(17),cy + S(1))
                     continue
                 stone = self.bMan if piece_color == GRID_BLACK else self.wMan
                 scr.blit(stone,stone.get_rect(center=(cx,cy)))
                 if (x,y) == self.last_ai_move:
-                    aa_circle(scr,ACCENT,(cx,cy),radius + 4,2)
+                    aa_circle(scr,ACCENT,(cx,cy),radius + S(4),max(2,S(2)))
                 elif (x,y) == self.last_move:
-                    aa_circle(scr,INK_MUTED,(cx,cy),radius + 4,1)
+                    aa_circle(scr,INK_MUTED,(cx,cy),radius + S(4),max(1,S(1)))
                 move_number = self.move_numbers[y][x]
                 if move_number:
                     number_color = (233,229,220) if piece_color == GRID_BLACK else (86,81,73)
@@ -804,12 +883,12 @@ class CLS_gomoku(object):
                     scr.blit(number_pic,number_pic.get_rect(center=(cx,cy)))
         if self.hover_cell is not None:
             hx,hy = self.hover_cell
-            ghost = pygame.Surface((STONE_D + 2,STONE_D + 2),pygame.SRCALPHA)
+            ghost = pygame.Surface((STONE_D + S(2),STONE_D + S(2)),pygame.SRCALPHA)
             center = (ghost.get_width() // 2,ghost.get_height() // 2)
             tint = ((26,24,22,48) if self.human_color == GRID_BLACK
                     else (255,253,248,140))
             aa_circle(ghost,tint,center,radius)
-            aa_circle(ghost,(*INK_MUTED,150),center,radius,1)
+            aa_circle(ghost,(*INK_MUTED,150),center,radius,max(1,S(1)))
             scr.blit(ghost,ghost.get_rect(center=self.cell_center(hx,hy)))
         return
 
@@ -831,23 +910,24 @@ class CLS_gomoku(object):
     def _draw_status(self,scr):
         card = self.status_card
         headline,tone,detail = self._status_lines()
-        text_y = card.y + 34
-        aa_circle(scr,tone,(card.x + 26,text_y + self.fontStatus.get_height() // 2),5)
+        text_y = card.y + S(34)
+        aa_circle(scr,tone,(card.x + S(26),text_y + self.fontStatus.get_height() // 2),S(5))
         draw_text(scr,self.fontStatus,INK,
-                  fit_text(self.fontStatus,headline,card.w - 62),card.x + 42,text_y)
-        draw_text(scr,self.fontHint,INK_MUTED,detail,card.x + 42,card.y + 62)
+                  fit_text(self.fontStatus,headline,card.w - S(62)),card.x + S(42),text_y)
+        draw_text(scr,self.fontHint,INK_MUTED,detail,card.x + S(42),card.y + S(62))
 
     def _draw_model(self,scr):
         card = self.model_card
-        inner = card.w - 40
+        inner = card.w - S(40)
         draw_text(scr,self.fontValue,INK,
-                  fit_text(self.fontValue,self.ai_model_label,inner),card.x + 20,card.y + 38)
+                  fit_text(self.fontValue,self.ai_model_label,inner),
+                  card.x + S(20),card.y + S(38))
         second = self.ai_search_label or self.ai_label
         draw_text(scr,self.fontHint,INK_SOFT,
-                  fit_text(self.fontHint,second,inner),card.x + 20,card.y + 64)
+                  fit_text(self.fontHint,second,inner),card.x + S(20),card.y + S(64))
         opponent = ('plays white' if self.ai_color == GRID_WHITE
                     else 'plays black' if self.ai_color == GRID_BLACK else 'waiting')
-        draw_text(scr,self.fontHint,INK_FAINT,opponent,card.x + 20,card.y + 82)
+        draw_text(scr,self.fontHint,INK_FAINT,opponent,card.x + S(20),card.y + S(82))
 
     def _draw_stats(self,scr):
         card = self.stats_card
@@ -855,19 +935,20 @@ class CLS_gomoku(object):
         if self.last_move is not None:
             last = chr(ord('A') + self.last_move[0]) + str(self.last_move[1] + 1)
         columns = (
-            (card.x + 20,'MOVES',str(self.move_count)),
-            (card.centerx + 20,'LAST MOVE',last),
+            (card.x + S(20),'MOVES',str(self.move_count)),
+            (card.centerx + S(20),'LAST MOVE',last),
         )
         for x,label,value in columns:
-            draw_tracked(scr,self.fontLabel,INK_MUTED,label,x,card.y + 22,tracking=2)
-            draw_text(scr,self.fontValue,INK,value,x,card.y + 42)
+            draw_tracked(scr,self.fontLabel,INK_MUTED,label,x,card.y + S(22),tracking=S(2))
+            draw_text(scr,self.fontValue,INK,value,x,card.y + S(42))
 
-    def _draw_button(self,scr,rect,text,fill,border,label_color,radius=14):
+    def _draw_button(self,scr,rect,text,fill,border,label_color,radius=None):
+        radius = S(14) if radius is None else radius
         if rect.collidepoint(self.mouse):
             fill = _lerp(fill,ACCENT,0.10) if fill != CARD else (255,254,251)
         pygame.draw.rect(scr,fill,rect,border_radius=radius)
         if border is not None:
-            pygame.draw.rect(scr,border,rect,1,border_radius=radius)
+            pygame.draw.rect(scr,border,rect,max(1,S(1)),border_radius=radius)
         pic = self.fontButton.render(text,True,label_color)
         scr.blit(pic,pic.get_rect(center=rect.center))
 
@@ -880,14 +961,14 @@ class CLS_gomoku(object):
             return
 
         pill = pygame.Rect(PANEL_X,BTN_ROW1_Y,PANEL_W,BTN_H)
-        pygame.draw.rect(scr,ACCENT_TINT,pill,border_radius=14)
-        stone = self.bMan if self.human_color == GRID_BLACK else self.wMan
-        chip = pygame.transform.smoothscale(stone,(22,22))
-        scr.blit(chip,chip.get_rect(center=(pill.x + 26,pill.centery)))
+        pygame.draw.rect(scr,ACCENT_TINT,pill,border_radius=S(14))
+        chip = self.bChip if self.human_color == GRID_BLACK else self.wChip
+        scr.blit(chip,chip.get_rect(center=(pill.x + S(26),pill.centery)))
         you = 'black' if self.human_color == GRID_BLACK else 'white'
-        draw_text(scr,self.fontBody,INK,'You play ' + you,pill.x + 46,pill.centery - 9)
-        draw_text(scr,self.fontHint,INK_MUTED,'C to switch',pill.right - 18,
-                  pill.centery - 8,'right')
+        draw_text(scr,self.fontBody,INK,'You play ' + you,pill.x + S(46),
+                  pill.centery - S(9))
+        draw_text(scr,self.fontHint,INK_MUTED,'C to switch',pill.right - S(18),
+                  pill.centery - S(8),'right')
 
         can_undo = self.can_undo()
         self._draw_button(
@@ -901,14 +982,14 @@ class CLS_gomoku(object):
     def _draw_result(self,scr):
         board_rect = pygame.Rect(self.x0,self.y0,BOARD_SURF,BOARD_SURF)
         veil = pygame.Surface(board_rect.size,pygame.SRCALPHA)
-        pygame.draw.rect(veil,(*BG,206),veil.get_rect(),border_radius=18)
+        pygame.draw.rect(veil,(*BG,206),veil.get_rect(),border_radius=S(18))
         scr.blit(veil,board_rect.topleft)
 
-        card = pygame.Rect(0,0,420,160)
+        card = pygame.Rect(0,0,S(420),S(160))
         card.center = board_rect.center
-        scr.blit(make_shadow(card.size,20,spread=18,alpha=6,offset=8),
-                 (card.x - 18,card.y - 18))
-        draw_card(scr,card,radius=20)
+        scr.blit(make_shadow(card.size,S(20),spread=S(18),alpha=6,offset=S(8)),
+                 (card.x - S(18),card.y - S(18)))
+        draw_card(scr,card,radius=S(20))
 
         if self.winner == GRID_NULL:
             title,tone = 'Draw',INK_SOFT
@@ -916,11 +997,11 @@ class CLS_gomoku(object):
             title,tone = 'You win',WIN_GREEN
         else:
             title,tone = 'Gargantua wins',ACCENT
-        draw_text(scr,self.fontWin,tone,title,card.centerx,card.y + 34,'center')
-        pygame.draw.line(scr,ACCENT_SOFT,(card.centerx - 26,card.y + 98),
-                         (card.centerx + 26,card.y + 98),2)
+        draw_text(scr,self.fontWin,tone,title,card.centerx,card.y + S(34),'center')
+        pygame.draw.line(scr,ACCENT_SOFT,(card.centerx - S(26),card.y + S(98)),
+                         (card.centerx + S(26),card.y + S(98)),max(2,S(2)))
         draw_text(scr,self.fontHint,INK_MUTED,'Press R or New game to play again',
-                  card.centerx,card.y + 112,'center')
+                  card.centerx,card.y + S(112),'center')
 
     def draw(self,scr):
         scr.blit(self.backdrop,(0,0))
@@ -1105,44 +1186,18 @@ class CLS_gomoku(object):
         return
 
 
-def enable_dpi_awareness():
-    """Ask Windows for real pixels so the window is not bitmap-stretched.
-
-    在 Windows 上声明 DPI 感知，避免系统把窗口放大导致模糊。
-    """
-    if sys.platform != 'win32':
-        return
-    try:
-        import ctypes
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
-            ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
-
-
-def window_scale():
-    """Shrink the frame only when the desktop cannot show it at 1:1."""
-    try:
-        width,height = pygame.display.get_desktop_sizes()[0]
-    except Exception:
-        info = pygame.display.Info()
-        width,height = info.current_w,info.current_h
-    scale = min(1.0,(width - 40) / SCREEN_WIDTH,(height - 90) / SCREEN_HEIGHT)
-    return max(0.55,scale)
-
-
 #-------main--------
 def main():
     enable_dpi_awareness()
     pygame.init()
     pygame.display.set_caption(APP_CAPTION)
-    scale = window_scale()
-    window = pygame.display.set_mode(
-        (round(SCREEN_WIDTH * scale),round(SCREEN_HEIGHT * scale))
-    )
-    canvas = window if scale == 1.0 else pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT))
+    # SCREEN_WIDTH/HEIGHT already include UI_SCALE, so the window is created at
+    # its true pixel size and every frame is drawn straight into it: no
+    # transform, therefore neither blur nor stair-stepping.
+    # 尺寸常量已含 UI_SCALE，窗口按真实像素创建、逐帧直接绘制，不做任何变换，
+    # 因此既不会发虚也不会有锯齿。
+    window = pygame.display.set_mode((SCREEN_WIDTH,SCREEN_HEIGHT))
+    print('UI scale %.2f, window %dx%d' % (UI_SCALE,SCREEN_WIDTH,SCREEN_HEIGHT))
     asset_dir = Path(__file__).resolve().parent
     # Stones are generated rather than loaded, so they stay crisp at any size.
     bPic = make_stone(STONE_D,(8,8,9),(74,72,76),spec=86,rim=(96,92,90))
@@ -1163,24 +1218,19 @@ def main():
     gomoku = CLS_gomoku(bPic,wPic,BOARD_X,BOARD_Y,ai_agent,game_logger)
     clock = pygame.time.Clock()
 
-    def to_canvas(pos):
-        return (pos[0] / scale,pos[1] / scale)
-
     running = True
     while running:
         for event in pygame.event.get():
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                gomoku.mouse_down(*to_canvas(event.pos))
+                gomoku.mouse_down(*event.pos)
             elif event.type == pygame.MOUSEMOTION:
-                gomoku.set_pointer(*to_canvas(event.pos))
+                gomoku.set_pointer(*event.pos)
             elif event.type == pygame.KEYDOWN:
                 gomoku.eventkey(event.key)
             elif event.type == pygame.QUIT:
                 running = False
         gomoku.update()
-        gomoku.draw(canvas)
-        if canvas is not window:
-            pygame.transform.smoothscale(canvas,window.get_size(),window)
+        gomoku.draw(window)
         pygame.display.update()
         clock.tick(60)
 
