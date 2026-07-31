@@ -25,17 +25,116 @@ Key algorithms / 重要算法
 """
 
 from pathlib import Path
+import math
 import queue
 import threading
 
 import pygame,sys
-SCREEN_WIDTH,SCREEN_HEIGHT= 800,680
-BOARD_ORDER,BOARD_SIZE = 19,30
-BOARD_X0,BOARD_Y0 = 15,15
+
 GRID_NULL,GRID_BLACK,GRID_WHITE = 0,1,2
 SPEED_X = [1,0,1,-1]
 SPEED_Y = [0,1,1,1]
-APP_TITLE = 'Gomoku AI - Gargantua'
+APP_TITLE = 'Gargantua'
+APP_TAGLINE = 'GOMOKU ENGINE'
+APP_CAPTION = 'Gargantua - Gomoku AI'
+
+# ---------------------------------------------------------------------------
+# Layout / 版面
+# ---------------------------------------------------------------------------
+# Everything is laid out in logical pixels at a comfortable desktop size.  The
+# whole frame is rendered onto one canvas and scaled down only if the physical
+# display cannot fit it, so the interface stays sharp on high-DPI screens.
+#
+# 界面按逻辑像素排版；整帧先绘制到画布，只有当显示器装不下时才整体缩放，
+# 因此在高分屏上依然锐利。
+BOARD_ORDER = 19
+BOARD_SIZE = 38                     # grid pitch / 棋盘格距
+BOARD_PAD = 36                      # quiet zone inside the board card
+BOARD_X0,BOARD_Y0 = BOARD_PAD,BOARD_PAD
+BOARD_SPAN = (BOARD_ORDER - 1) * BOARD_SIZE
+BOARD_SURF = BOARD_SPAN + BOARD_PAD * 2
+STONE_D = BOARD_SIZE - 3
+MARGIN = 44
+BOARD_X,BOARD_Y = MARGIN,MARGIN
+PANEL_GAP = 32
+PANEL_X = BOARD_X + BOARD_SURF + PANEL_GAP
+PANEL_W = 392
+SCREEN_WIDTH = PANEL_X + PANEL_W + MARGIN
+SCREEN_HEIGHT = BOARD_Y + BOARD_SURF + MARGIN
+
+# Side panel rhythm, top to bottom / 右侧信息栏的纵向节奏
+MARK_SIZE = 60
+MARK_Y = MARGIN
+WORD_Y = 112
+TAG_Y = 172
+RULE_Y = 198
+BTN_H = 48
+BTN_ROW1_Y = 529
+BTN_ROW2_Y = 589
+KEYS_Y = 683
+
+# ---------------------------------------------------------------------------
+# Palette / 配色
+# ---------------------------------------------------------------------------
+# Warm paper background, near-black ink and a single clay accent, in the spirit
+# of Anthropic's brand surfaces; the board keeps a slightly deeper paper tone so
+# the stones read as objects sitting on it.
+INK        = (23,22,20)
+INK_SOFT   = (92,88,80)
+INK_MUTED  = (141,135,124)
+INK_FAINT  = (186,180,167)
+BG         = (240,238,230)
+CARD       = (250,249,245)
+BORDER     = (224,219,206)
+HAIRLINE   = (232,228,217)
+ACCENT     = (198,106,76)
+ACCENT_SOFT= (233,199,186)
+ACCENT_TINT= (247,236,231)
+BOARD_BG   = (232,224,207)
+BOARD_LINE = (176,164,141)
+BOARD_STAR = (128,116,96)
+WIN_GREEN  = (86,122,86)
+
+# Fonts are loaded from files rather than through ``pygame.font.SysFont``:
+# enumerating the Windows font registry crashes on some machines, and the file
+# lookup also guarantees we get the exact weight we asked for.
+# 直接按文件加载字体，既避开 SysFont 在部分 Windows 上的崩溃，也能拿到准确字重。
+SANS = ('segoeui.ttf','selawk.ttf','arial.ttf','DejaVuSans.ttf')
+SANS_MED = ('seguisb.ttf','segoeuisb.ttf','selawksb.ttf','segoeuib.ttf',
+            'arialbd.ttf','DejaVuSans-Bold.ttf')
+SERIF = ('georgia.ttf','constan.ttf','pala.ttf','times.ttf','DejaVuSerif.ttf')
+FONT_DIRS = (
+    Path(sys.executable).parent,
+    Path('C:/Windows/Fonts'),
+    Path.home() / 'AppData/Local/Microsoft/Windows/Fonts',
+    Path('/usr/share/fonts/truetype/dejavu'),
+    Path('/Library/Fonts'),
+)
+_FONT_CACHE = {}
+
+
+def load_font(files,size):
+    """Return a font for the first available file, or the pygame default."""
+    key = (files,size)
+    cached = _FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    font = None
+    for directory in FONT_DIRS:
+        for name in files:
+            path = directory / name
+            try:
+                if path.is_file():
+                    font = pygame.font.Font(str(path),size)
+                    break
+            except OSError:
+                continue
+        if font is not None:
+            break
+    if font is None:
+        font = pygame.font.Font(None,int(size * 1.32))
+    _FONT_CACHE[key] = font
+    return font
 
 def is_five(grid, x, y, flag):
     directions = [(0, 1), (1, 0), (1, 1), (1, -1)]  # Horizontal, Vertical, Diagonal Right, Diagonal Left
@@ -182,6 +281,162 @@ def RT_draw_txt(scr,fnt,cls,txt,x,y):
     scr.blit(pic,(x,y))
     return
 
+
+# ---------------------------------------------------------------------------
+# Drawing helpers / 绘图工具
+# ---------------------------------------------------------------------------
+def _lerp(c0,c1,t):
+    return tuple(int(a + (b - a) * t) for a,b in zip(c0,c1))
+
+
+def draw_text(scr,fnt,color,text,x,y,align='left'):
+    """Blit ``text`` and return its rect. ``align`` is left/center/right."""
+    pic = fnt.render(text,True,color)
+    rect = pic.get_rect()
+    if align == 'center':
+        rect.midtop = (x,y)
+    elif align == 'right':
+        rect.topright = (x,y)
+    else:
+        rect.topleft = (x,y)
+    scr.blit(pic,rect)
+    return rect
+
+
+def draw_tracked(scr,fnt,color,text,x,y,tracking=2,align='left'):
+    """Draw letter-spaced small caps, used for the quiet section labels."""
+    glyphs = [(fnt.render(ch,True,color)) for ch in text]
+    width = sum(g.get_width() for g in glyphs) + tracking * max(0,len(glyphs) - 1)
+    if align == 'center':
+        x -= width // 2
+    elif align == 'right':
+        x -= width
+    for glyph in glyphs:
+        scr.blit(glyph,(x,y))
+        x += glyph.get_width() + tracking
+    return width
+
+
+def aa_circle(surf,color,center,radius,width=0):
+    """Antialiased circle, falling back to the plain renderer if needed."""
+    x,y,r = int(center[0]),int(center[1]),int(radius)
+    try:
+        from pygame import gfxdraw
+    except ImportError:
+        pygame.draw.circle(surf,color,(x,y),r,width)
+        return
+    if width <= 0:
+        gfxdraw.filled_circle(surf,x,y,r,color)
+        gfxdraw.aacircle(surf,x,y,r,color)
+    else:
+        for i in range(width):
+            gfxdraw.aacircle(surf,x,y,r - i,color)
+
+
+def fit_text(fnt,text,max_width):
+    """Trim ``text`` with an ellipsis so it never overflows its card."""
+    if fnt.size(text)[0] <= max_width:
+        return text
+    while text and fnt.size(text + '...')[0] > max_width:
+        text = text[:-1]
+    return text + '...'
+
+
+def make_shadow(size,radius,spread=10,alpha=6,offset=4):
+    """A soft drop shadow built from stacked translucent rounded rectangles."""
+    w,h = size
+    surf = pygame.Surface((w + spread * 2,h + spread * 2 + offset),pygame.SRCALPHA)
+    for i in range(spread,0,-1):
+        pygame.draw.rect(
+            surf,(64,56,40,alpha),
+            (spread - i,spread - i + offset,w + i * 2,h + i * 2),
+            border_radius=radius + i,
+        )
+    return surf
+
+
+def draw_card(scr,rect,fill=CARD,border=BORDER,radius=16,width=1):
+    pygame.draw.rect(scr,fill,rect,border_radius=radius)
+    if border is not None:
+        pygame.draw.rect(scr,border,rect,width,border_radius=radius)
+    return rect
+
+
+def make_stone(diameter,edge,core,spec=110,rim=None):
+    """Render one stone with a soft radial gradient, rim light and shadow.
+
+    Drawn at 4x and scaled down, which gives clean antialiased edges without
+    depending on any image asset.  以 4 倍尺寸绘制后缩小，得到平滑抗锯齿边缘。
+    """
+    ss = 4
+    d = diameter * ss
+    pad = int(d * 0.20)
+    size = d + pad * 2
+    surf = pygame.Surface((size,size),pygame.SRCALPHA)
+    cx = cy = size // 2
+    r = d // 2
+
+    contact = max(1,int(pad * 0.85))
+    for i in range(contact,0,-1):
+        alpha = int(30 * (1 - i / contact) ** 1.4) + 3
+        pygame.draw.circle(surf,(46,38,26,alpha),(cx,cy + int(d * 0.05)),r + i)
+
+    for i in range(r,0,-1):
+        t = i / r
+        offset = int(-(1 - t) * d * 0.11)
+        pygame.draw.circle(surf,_lerp(core,edge,t ** 1.5),(cx + offset,cy + offset),i)
+
+    if rim is not None:
+        pygame.draw.circle(surf,rim,(cx,cy),r,max(1,ss // 2))
+
+    if spec:
+        gloss = pygame.Surface((size,size),pygame.SRCALPHA)
+        hr = max(2,int(r * 0.36))
+        for i in range(hr,0,-1):
+            alpha = int(spec * (1 - i / hr) ** 1.5)
+            pygame.draw.circle(
+                gloss,(255,255,255,alpha),
+                (cx - int(r * 0.34),cy - int(r * 0.38)),i,
+            )
+        surf.blit(gloss,(0,0))
+    return pygame.transform.smoothscale(surf,(size // ss,size // ss))
+
+
+def make_black_hole(size):
+    """The Gargantua mark: an event horizon ringed by a lensed accretion disk.
+
+    Gargantua 是黑洞的名字，用视界与被引力透镜弯折的吸积盘作为标志。
+    """
+    ss = 3
+    s = size * ss
+    surf = pygame.Surface((s,s),pygame.SRCALPHA)
+    c = (s - 1) / 2.0
+    core_r = s * 0.245
+    ring_r = s * 0.281                  # brightest radius of the photon ring
+    sigma = s * 0.048                   # how soft the ring falls off
+    reach = s * 0.50
+
+    pygame.draw.circle(surf,(11,10,11,255),(round(c),round(c)),int(core_r) + 1)
+
+    # The ring is shaded per pixel: a soft radial band, brightened on the side
+    # rotating toward the viewer the way Doppler beaming lights one edge.
+    # 逐像素着色：径向柔和光带，并让朝向观察者的一侧更亮（多普勒增亮）。
+    warm,bright = (214,124,84),(255,222,182)
+    for py in range(s):
+        dy = py - c
+        for px in range(s):
+            dx = px - c
+            r = math.hypot(dx,dy)
+            if r < core_r or r > reach:
+                continue
+            band = math.exp(-((r - ring_r) / sigma) ** 2)
+            if band < 0.012:
+                continue
+            beam = 0.5 + 0.5 * (dy / r)
+            color = _lerp(warm,bright,beam ** 1.4)
+            surf.set_at((px,py),(*color,min(255,int(255 * band * (0.5 + 0.5 * beam)))))
+    return pygame.transform.smoothscale(surf,(size,size))
+
 def RT_get_flag_beads(grid,x,y,man,flag):
     beadsNum,powerNum = 1,0
     for i in range(-1,-5,-1):
@@ -243,42 +498,111 @@ class CLS_assess(object):
 
 class CLS_gomoku(object):
     def draw_board(self):
-        self.board.fill((240,200,0))
-        L = BOARD_X0 + (BOARD_ORDER - 1) * BOARD_SIZE
-        for i in range(BOARD_X0,SCREEN_HEIGHT,BOARD_SIZE):
-            pygame.draw.line(self.board,(0,0,0),
-                             (BOARD_X0,i),(L,i),2)
-            pygame.draw.line(self.board,(0,0,0),
-                             (i,BOARD_Y0),(i,L),1)
-        pygame.draw.rect(self.board,(0,0,0),\
-                         (BOARD_X0 - 1,BOARD_Y0 - 1,
-                          L + 3 - BOARD_X0, L + 3 - BOARD_Y0),1)
+        """Pre-render the static board: paper, grid, star points, coordinates."""
+        self.board = pygame.Surface((BOARD_SURF,BOARD_SURF),pygame.SRCALPHA)
+        pygame.draw.rect(self.board,BOARD_BG,self.board.get_rect(),border_radius=18)
+        o,L = BOARD_X0,BOARD_X0 + BOARD_SPAN
+        for i in range(BOARD_ORDER):
+            p = o + i * BOARD_SIZE
+            pygame.draw.line(self.board,BOARD_LINE,(o,p),(L,p),1)
+            pygame.draw.line(self.board,BOARD_LINE,(p,o),(p,L),1)
+        pygame.draw.rect(self.board,_lerp(BOARD_LINE,INK,0.30),
+                         (o,o,BOARD_SPAN,BOARD_SPAN),2)
         for star_y in (3,9,15):
             for star_x in (3,9,15):
-                pygame.draw.circle(
-                    self.board,
-                    (0,0,0),
-                    (
-                        BOARD_X0 + star_x * BOARD_SIZE,
-                        BOARD_Y0 + star_y * BOARD_SIZE,
-                    ),
-                    5,
-                )
+                aa_circle(self.board,BOARD_STAR,
+                          (o + star_x * BOARD_SIZE,o + star_y * BOARD_SIZE),4)
+        label_color = _lerp(BOARD_LINE,INK,0.35)
+        half = self.fontCoord.get_height() // 2
+        for i in range(BOARD_ORDER):
+            p = o + i * BOARD_SIZE
+            letter,number = chr(ord('A') + i),str(i + 1)
+            draw_text(self.board,self.fontCoord,label_color,letter,p,o - 25,'center')
+            draw_text(self.board,self.fontCoord,label_color,letter,p,L + 9,'center')
+            draw_text(self.board,self.fontCoord,label_color,number,o - 13,p - half,'right')
+            draw_text(self.board,self.fontCoord,label_color,number,L + 13,p - half)
         return
-    def __init__(self,bPic,wPic,x0,y0,ai_agent=None):
+
+    def _build_backdrop(self):
+        """Render every static pixel once: paper, shadows, cards, wordmark."""
+        self.backdrop = pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT))
+        scr = self.backdrop
+        scr.fill(BG)
+
+        board_rect = pygame.Rect(self.x0,self.y0,BOARD_SURF,BOARD_SURF)
+        shadow = make_shadow(board_rect.size,18,spread=14,alpha=5,offset=6)
+        scr.blit(shadow,(board_rect.x - 14,board_rect.y - 14))
+        scr.blit(self.board,board_rect.topleft)
+
+        scr.blit(self.mark,(PANEL_X,MARK_Y))
+        draw_text(scr,self.fontWord,INK,APP_TITLE,PANEL_X - 2,WORD_Y)
+        draw_tracked(scr,self.fontLabel,ACCENT,APP_TAGLINE,PANEL_X,TAG_Y,tracking=3)
+        pygame.draw.line(scr,BORDER,(PANEL_X,RULE_Y),(PANEL_X + PANEL_W,RULE_Y),1)
+
+        for rect in (self.status_card,self.model_card,self.stats_card):
+            scr.blit(make_shadow(rect.size,16),(rect.x - 10,rect.y - 10))
+            draw_card(scr,rect)
+
+        draw_tracked(scr,self.fontLabel,INK_MUTED,'STATUS',
+                     self.status_card.x + 20,self.status_card.y + 18,tracking=2)
+        draw_tracked(scr,self.fontLabel,INK_MUTED,'ENGINE',
+                     self.model_card.x + 20,self.model_card.y + 18,tracking=2)
+        pygame.draw.line(scr,HAIRLINE,
+                         (self.stats_card.centerx,self.stats_card.y + 18),
+                         (self.stats_card.centerx,self.stats_card.bottom - 18),1)
+
+        pygame.draw.line(scr,BORDER,(PANEL_X,KEYS_Y - 22),
+                         (PANEL_X + PANEL_W,KEYS_Y - 22),1)
+        draw_tracked(scr,self.fontLabel,INK_MUTED,'SHORTCUTS',PANEL_X,KEYS_Y,tracking=2)
+        keys = (
+            ('B / W','choose your color'),
+            ('U / Bksp','undo your last turn'),
+            ('R / Enter','restart the game'),
+            ('C','back to color choice'),
+            ('S','toggle shape scores'),
+        )
+        for row,(key,meaning) in enumerate(keys):
+            y = KEYS_Y + 22 + row * 20
+            draw_text(scr,self.fontKey,INK_SOFT,key,PANEL_X,y)
+            draw_text(scr,self.fontHint,INK_MUTED,meaning,PANEL_X + 92,y + 1)
+        return
+
+    def __init__(self,bPic,wPic,x0=BOARD_X,y0=BOARD_Y,ai_agent=None,game_logger=None):
         self.bMan,self.wMan = bPic,wPic
-        self.font = pygame.font.Font(None,32)
-        self.fontScore = pygame.font.Font(None,16)
-        self.fontMove = pygame.font.Font(None,18)
-        self.fontWin = pygame.font.Font(None,96)
-        self.fontTitle = pygame.font.Font(None,44)
-        self.board = pygame.Surface((570,570))
-        self.draw_board()
+        self.fontCoord = load_font(SANS,12)
+        self.fontLabel = load_font(SANS_MED,11)
+        self.fontScore = load_font(SANS,11)
+        self.fontMove = load_font(SANS,13)
+        self.fontHint = load_font(SANS,13)
+        self.fontKey = load_font(SANS_MED,13)
+        self.fontBody = load_font(SANS,14)
+        self.fontValue = load_font(SANS_MED,17)
+        self.fontStatus = load_font(SANS_MED,22)
+        self.fontButton = load_font(SANS_MED,15)
+        self.fontWord = load_font(SERIF,44)
+        self.fontWin = load_font(SERIF,42)
+        self.font = self.fontBody
         self.x0,self.y0 = x0,y0
+        self.mark = make_black_hole(MARK_SIZE)
+        self.status_card = pygame.Rect(PANEL_X,214,PANEL_W,88)
+        self.model_card = pygame.Rect(PANEL_X,314,PANEL_W,104)
+        self.stats_card = pygame.Rect(PANEL_X,430,PANEL_W,78)
+        self.black_button = pygame.Rect(PANEL_X,BTN_ROW1_Y,PANEL_W,BTN_H)
+        self.white_button = pygame.Rect(PANEL_X,BTN_ROW2_Y,PANEL_W,BTN_H)
+        self.undo_button = pygame.Rect(PANEL_X,BTN_ROW2_Y,PANEL_W // 2 - 7,BTN_H)
+        self.restart_button = pygame.Rect(
+            PANEL_X + PANEL_W // 2 + 7,BTN_ROW2_Y,PANEL_W // 2 - 7,BTN_H
+        )
+        self.mouse = (-1,-1)
+        self.hover_cell = None
+        self.draw_board()
+        self._build_backdrop()
         self.ai_agent = ai_agent
         self.ai_results = queue.Queue()
         self.ai_thinking = False
         self.game_generation = 0
+        self.game_logger = game_logger
+        self._game_logged = False
         self.ai_label = ai_agent.label if ai_agent is not None else 'Heuristic fallback'
         self.ai_model_label = (
             getattr(ai_agent,'model_label',self.ai_label)
@@ -293,9 +617,6 @@ class CLS_gomoku(object):
         self.human_color = None
         self.ai_color = None
         self.turn = GRID_BLACK
-        self.black_button = pygame.Rect(625,300,145,40)
-        self.white_button = pygame.Rect(625,350,145,40)
-        self.undo_button = pygame.Rect(625,350,145,40)
         self.grid_init(None)
     def grid_init(self,human_color=None):
         self.grid = []
@@ -329,10 +650,12 @@ class CLS_gomoku(object):
         self.ai_thinking = False
         self.winner = -1
         self.sysStat = 0
+        self._game_logged = False
         return
     def select_color(self,human_color):
         if human_color not in (GRID_BLACK,GRID_WHITE):
             return
+        self._archive_unfinished_game('color_changed')
         self.grid_init(human_color)
         if self.ai_color == GRID_BLACK:
             self._start_ai_move()
@@ -376,91 +699,238 @@ class CLS_gomoku(object):
         )
         self.winner = -1
         self.sysStat = 0
+        self._game_logged = False
         self.turn = self.human_color
         self.grid_assess()
         return True
+
+    def _archive_game(self,winner,termination):
+        if (
+            self._game_logged
+            or self.game_logger is None
+            or not self.move_history
+            or self.ai_color not in (GRID_BLACK,GRID_WHITE)
+        ):
+            return None
+        # Mark first so a disk error cannot cause duplicate archives later.
+        self._game_logged = True
+        try:
+            saved = self.game_logger.record_game(
+                self.move_history,
+                winner=winner,
+                ai_color=self.ai_color,
+                model_label=self.ai_model_label,
+                search_label=self.ai_search_label,
+                termination=termination,
+            )
+            print('Game replay saved:',saved.replay_path)
+            if saved.pending_replay_path is not None:
+                print('AI loss added to pending training library:',saved.pending_replay_path)
+            return saved
+        except Exception as exc:
+            print('Could not save game replay:',exc)
+            return None
+
+    def _archive_unfinished_game(self,termination):
+        if self.sysStat != 1:
+            return self._archive_game(None,termination)
+        return None
+
+    def _finish_game(self,winner,message=None):
+        self.winner = winner
+        self.sysStat = 1
+        if message:
+            print(message)
+        return self._archive_game(winner,'completed')
+
+    def close(self):
+        """Archive an in-progress game before the application exits."""
+        self._archive_unfinished_game('window_closed')
+    def cell_center(self,x,y):
+        """Screen center of intersection ``(x,y)``. 交点的屏幕坐标。"""
+        return (self.x0 + BOARD_X0 + x * BOARD_SIZE,
+                self.y0 + BOARD_Y0 + y * BOARD_SIZE)
+
+    def set_pointer(self,mx,my):
+        """Track the cursor so the board can preview the move under it."""
+        self.mouse = (mx,my)
+        self.hover_cell = None
+        if (self.human_color is None or self.sysStat == 1
+                or self.ai_thinking or self.turn != self.human_color):
+            return
+        cell = self.point_to_cell(mx,my)
+        if cell is not None and self.grid[cell[1]][cell[0]] == GRID_NULL:
+            self.hover_cell = cell
+
+    def point_to_cell(self,mx,my):
+        """Map a click to an intersection, ignoring clicks off the board."""
+        x = round((mx - self.x0 - BOARD_X0) / BOARD_SIZE)
+        y = round((my - self.y0 - BOARD_Y0) / BOARD_SIZE)
+        if not (0 <= x < BOARD_ORDER and 0 <= y < BOARD_ORDER):
+            return None
+        cx,cy = self.cell_center(x,y)
+        if math.hypot(mx - cx,my - cy) > BOARD_SIZE * 0.62:
+            return None
+        return x,y
+
     def draw_chess(self,scr):
+        radius = STONE_D // 2
         for y in range(BOARD_ORDER):
             for x in range(BOARD_ORDER):
                 piece_color = self.grid[y][x]
-                if self.grid[y][x] == GRID_BLACK:
-                    scr.blit(self.bMan,\
-                             (self.x0 + x * BOARD_SIZE,self.y0 + y * BOARD_SIZE))
-                elif self.grid[y][x] == GRID_WHITE:
-                    scr.blit(self.wMan,\
-                             (self.x0 + x * BOARD_SIZE,self.y0 + y * BOARD_SIZE))
-                elif self.assessFlag == True:
-                    pnt = self.assessList[y][x]
-                    if pnt.bAssess > 0 or pnt.bValue > 0:
-                        txt = str(pnt.bAssess) + ',' + str(pnt.bValue)
-                        RT_draw_txt(scr,self.fontScore,(0,0,0),txt,\
-                                    self.x0 + x * BOARD_SIZE,self.y0 + y * BOARD_SIZE + 2)
-                    if pnt.wAssess > 0 or pnt.wValue > 0:
-                        txt = str(pnt.wAssess) + ',' + str(pnt.wValue)
-                        RT_draw_txt(scr,self.fontScore,(255,255,255),txt,\
-                                    self.x0 + x * BOARD_SIZE,self.y0 + y * BOARD_SIZE + 16)
-                if piece_color != GRID_NULL:
-                    piece_rect = pygame.Rect(
-                        self.x0 + x * BOARD_SIZE,
-                        self.y0 + y * BOARD_SIZE,
-                        BOARD_SIZE,
-                        BOARD_SIZE,
-                    )
-                    if (x,y) == self.last_ai_move:
-                        pygame.draw.rect(scr,(235,0,180),piece_rect,2)
-                    move_number = self.move_numbers[y][x]
-                    if move_number:
-                        number_color = (255,255,255) if piece_color == GRID_BLACK else (35,35,35)
-                        number_pic = self.fontMove.render(str(move_number),True,number_color)
-                        number_rect = number_pic.get_rect(center=piece_rect.center)
-                        scr.blit(number_pic,number_rect)
+                cx,cy = self.cell_center(x,y)
+                if piece_color == GRID_NULL:
+                    if self.assessFlag:
+                        pnt = self.assessList[y][x]
+                        if pnt.bAssess > 0 or pnt.bValue > 0:
+                            RT_draw_txt(scr,self.fontScore,(48,45,41),
+                                        str(pnt.bAssess) + ',' + str(pnt.bValue),
+                                        cx - 17,cy - 13)
+                        if pnt.wAssess > 0 or pnt.wValue > 0:
+                            RT_draw_txt(scr,self.fontScore,(250,249,245),
+                                        str(pnt.wAssess) + ',' + str(pnt.wValue),
+                                        cx - 17,cy + 1)
+                    continue
+                stone = self.bMan if piece_color == GRID_BLACK else self.wMan
+                scr.blit(stone,stone.get_rect(center=(cx,cy)))
+                if (x,y) == self.last_ai_move:
+                    aa_circle(scr,ACCENT,(cx,cy),radius + 4,2)
+                elif (x,y) == self.last_move:
+                    aa_circle(scr,INK_MUTED,(cx,cy),radius + 4,1)
+                move_number = self.move_numbers[y][x]
+                if move_number:
+                    number_color = (233,229,220) if piece_color == GRID_BLACK else (86,81,73)
+                    number_pic = self.fontMove.render(str(move_number),True,number_color)
+                    scr.blit(number_pic,number_pic.get_rect(center=(cx,cy)))
+        if self.hover_cell is not None:
+            hx,hy = self.hover_cell
+            ghost = pygame.Surface((STONE_D + 2,STONE_D + 2),pygame.SRCALPHA)
+            center = (ghost.get_width() // 2,ghost.get_height() // 2)
+            tint = ((26,24,22,48) if self.human_color == GRID_BLACK
+                    else (255,253,248,140))
+            aa_circle(ghost,tint,center,radius)
+            aa_circle(ghost,(*INK_MUTED,150),center,radius,1)
+            scr.blit(ghost,ghost.get_rect(center=self.cell_center(hx,hy)))
         return
-    def draw(self,scr):
-        scr.fill((180,140,0))
-        title_pic = self.fontTitle.render(APP_TITLE,True,(255,235,120))
-        title_rect = title_pic.get_rect(center=(SCREEN_WIDTH // 2,36))
-        scr.blit(title_pic,title_rect)
-        scr.blit(self.board,(self.x0,self.y0))
-        self.draw_chess(scr)
-        RT_draw_txt(scr,self.fontScore,(255,245,200),'MODEL:',625,125)
-        RT_draw_txt(scr,self.fontScore,(255,245,200),self.ai_model_label,625,145)
-        if self.ai_search_label:
-            RT_draw_txt(scr,self.fontScore,(255,220,80),self.ai_search_label,625,162)
+
+    def _status_lines(self):
+        """Headline, accent color and supporting line for the status card."""
+        you = 'black' if self.human_color == GRID_BLACK else 'white'
         if self.human_color is None:
-            status = 'CHOOSE COLOR'
-            status_color = (255,220,80)
-        elif self.sysStat == 1:
-            status = 'GAME OVER'
-            status_color = (245,245,245)
-        elif self.ai_thinking:
-            status = 'AI THINKING...'
-            status_color = (255,220,80)
-        else:
-            status = 'YOUR TURN'
-            status_color = (245,245,245)
-        RT_draw_txt(scr,self.fontScore,status_color,status,625,185)
-        RT_draw_txt(scr,self.fontScore,(245,235,190),'R/Enter: restart',625,225)
-        RT_draw_txt(scr,self.fontScore,(245,235,190),'S: show scores',625,245)
-        RT_draw_txt(scr,self.fontScore,(245,235,190),'C: change color',625,265)
-        RT_draw_txt(scr,self.fontScore,(245,235,190),'U/Backspace: undo',625,285)
-        if self.human_color is None:
-            pygame.draw.rect(scr,(30,30,30),self.black_button)
-            pygame.draw.rect(scr,(245,245,245),self.white_button)
-            RT_draw_txt(scr,self.fontScore,(255,255,255),'B: BLACK (FIRST)',633,313)
-            RT_draw_txt(scr,self.fontScore,(0,0,0),'W: WHITE (SECOND)',631,363)
-        else:
-            color_name = 'BLACK (FIRST)' if self.human_color == GRID_BLACK else 'WHITE (SECOND)'
-            RT_draw_txt(scr,self.fontScore,(245,235,190),'YOU: ' + color_name,625,313)
-            undo_color = (255,220,80) if self.can_undo() else (105,90,55)
-            pygame.draw.rect(scr,undo_color,self.undo_button)
-            RT_draw_txt(scr,self.fontScore,(25,25,25),'UNDO LAST TURN',638,363)
+            return 'Choose a color',ACCENT,'Black opens the game'
         if self.sysStat == 1:
-            txt,cls = 'YOU WIN!!!',(255,0,0)
-            if self.winner == self.ai_color:
-                txt,cls = 'YOU LOSE!!!',(0,0,255)
-            elif self.winner == GRID_NULL:
-                txt,cls = 'DRAW',(80,80,80)
-            RT_draw_txt(scr,self.fontWin,cls,txt,200,290)
+            if self.winner == GRID_NULL:
+                return 'Draw',INK_SOFT,'The board is full'
+            if self.winner == self.human_color:
+                return 'You win',WIN_GREEN,'Five in a row on move %d' % self.move_count
+            return 'Gargantua wins',ACCENT,'Five in a row on move %d' % self.move_count
+        if self.ai_thinking:
+            return 'Gargantua is thinking',ACCENT,'Searching the tree'
+        return 'Your move',INK,'Move %d, you play %s' % (self.move_count + 1,you)
+
+    def _draw_status(self,scr):
+        card = self.status_card
+        headline,tone,detail = self._status_lines()
+        text_y = card.y + 34
+        aa_circle(scr,tone,(card.x + 26,text_y + self.fontStatus.get_height() // 2),5)
+        draw_text(scr,self.fontStatus,INK,
+                  fit_text(self.fontStatus,headline,card.w - 62),card.x + 42,text_y)
+        draw_text(scr,self.fontHint,INK_MUTED,detail,card.x + 42,card.y + 62)
+
+    def _draw_model(self,scr):
+        card = self.model_card
+        inner = card.w - 40
+        draw_text(scr,self.fontValue,INK,
+                  fit_text(self.fontValue,self.ai_model_label,inner),card.x + 20,card.y + 38)
+        second = self.ai_search_label or self.ai_label
+        draw_text(scr,self.fontHint,INK_SOFT,
+                  fit_text(self.fontHint,second,inner),card.x + 20,card.y + 64)
+        opponent = ('plays white' if self.ai_color == GRID_WHITE
+                    else 'plays black' if self.ai_color == GRID_BLACK else 'waiting')
+        draw_text(scr,self.fontHint,INK_FAINT,opponent,card.x + 20,card.y + 82)
+
+    def _draw_stats(self,scr):
+        card = self.stats_card
+        last = '—'
+        if self.last_move is not None:
+            last = chr(ord('A') + self.last_move[0]) + str(self.last_move[1] + 1)
+        columns = (
+            (card.x + 20,'MOVES',str(self.move_count)),
+            (card.centerx + 20,'LAST MOVE',last),
+        )
+        for x,label,value in columns:
+            draw_tracked(scr,self.fontLabel,INK_MUTED,label,x,card.y + 22,tracking=2)
+            draw_text(scr,self.fontValue,INK,value,x,card.y + 42)
+
+    def _draw_button(self,scr,rect,text,fill,border,label_color,radius=14):
+        if rect.collidepoint(self.mouse):
+            fill = _lerp(fill,ACCENT,0.10) if fill != CARD else (255,254,251)
+        pygame.draw.rect(scr,fill,rect,border_radius=radius)
+        if border is not None:
+            pygame.draw.rect(scr,border,rect,1,border_radius=radius)
+        pic = self.fontButton.render(text,True,label_color)
+        scr.blit(pic,pic.get_rect(center=rect.center))
+
+    def _draw_controls(self,scr):
+        if self.human_color is None:
+            self._draw_button(scr,self.black_button,'Play as black  ·  move first',
+                              INK,None,(250,249,245))
+            self._draw_button(scr,self.white_button,'Play as white  ·  move second',
+                              CARD,BORDER,INK)
+            return
+
+        pill = pygame.Rect(PANEL_X,BTN_ROW1_Y,PANEL_W,BTN_H)
+        pygame.draw.rect(scr,ACCENT_TINT,pill,border_radius=14)
+        stone = self.bMan if self.human_color == GRID_BLACK else self.wMan
+        chip = pygame.transform.smoothscale(stone,(22,22))
+        scr.blit(chip,chip.get_rect(center=(pill.x + 26,pill.centery)))
+        you = 'black' if self.human_color == GRID_BLACK else 'white'
+        draw_text(scr,self.fontBody,INK,'You play ' + you,pill.x + 46,pill.centery - 9)
+        draw_text(scr,self.fontHint,INK_MUTED,'C to switch',pill.right - 18,
+                  pill.centery - 8,'right')
+
+        can_undo = self.can_undo()
+        self._draw_button(
+            scr,self.undo_button,'Undo',
+            CARD if can_undo else (245,243,236),
+            BORDER if can_undo else HAIRLINE,
+            INK if can_undo else INK_FAINT,
+        )
+        self._draw_button(scr,self.restart_button,'New game',ACCENT,None,(255,252,250))
+
+    def _draw_result(self,scr):
+        board_rect = pygame.Rect(self.x0,self.y0,BOARD_SURF,BOARD_SURF)
+        veil = pygame.Surface(board_rect.size,pygame.SRCALPHA)
+        pygame.draw.rect(veil,(*BG,206),veil.get_rect(),border_radius=18)
+        scr.blit(veil,board_rect.topleft)
+
+        card = pygame.Rect(0,0,420,160)
+        card.center = board_rect.center
+        scr.blit(make_shadow(card.size,20,spread=18,alpha=6,offset=8),
+                 (card.x - 18,card.y - 18))
+        draw_card(scr,card,radius=20)
+
+        if self.winner == GRID_NULL:
+            title,tone = 'Draw',INK_SOFT
+        elif self.winner == self.human_color:
+            title,tone = 'You win',WIN_GREEN
+        else:
+            title,tone = 'Gargantua wins',ACCENT
+        draw_text(scr,self.fontWin,tone,title,card.centerx,card.y + 34,'center')
+        pygame.draw.line(scr,ACCENT_SOFT,(card.centerx - 26,card.y + 98),
+                         (card.centerx + 26,card.y + 98),2)
+        draw_text(scr,self.fontHint,INK_MUTED,'Press R or New game to play again',
+                  card.centerx,card.y + 112,'center')
+
+    def draw(self,scr):
+        scr.blit(self.backdrop,(0,0))
+        self.draw_chess(scr)
+        self._draw_status(scr)
+        self._draw_model(scr)
+        self._draw_stats(scr)
+        self._draw_controls(scr)
+        if self.sysStat == 1:
+            self._draw_result(scr)
         return
     def grid_assess(self):
         self.bMaxAssess,self.bMaxValue,self.bpX,self.bpY = 0,0,-1,-1
@@ -552,8 +1022,7 @@ class CLS_gomoku(object):
         or self.grid[ai_y][ai_x] != GRID_NULL:
             fallback = choose_ai_move(self.grid,self.ai_color)
             if fallback is None:
-                self.winner = GRID_NULL
-                self.sysStat = 1
+                self._finish_game(GRID_NULL)
                 return
             ai_x,ai_y = fallback
         self.grid[ai_y][ai_x] = self.ai_color
@@ -563,16 +1032,19 @@ class CLS_gomoku(object):
         self.last_move = (ai_x,ai_y)
         self.last_ai_move = (ai_x,ai_y)
         if is_five(self.grid,ai_x,ai_y,self.ai_color):
-            self.winner = self.ai_color
-            self.sysStat = 1
-            print('You lose!!!')
+            self._finish_game(self.ai_color,'You lose!!!')
             return
         if board_full(self.grid):
-            self.winner = GRID_NULL
-            self.sysStat = 1
+            self._finish_game(GRID_NULL)
             return
         self.turn = self.human_color
         self.grid_assess()
+
+    def restart(self):
+        self._archive_unfinished_game('restarted')
+        self.grid_init(self.human_color)
+        if self.ai_color == GRID_BLACK:
+            self._start_ai_move()
 
     def mouse_down(self,mx,my):
         if self.human_color is None:
@@ -584,14 +1056,18 @@ class CLS_gomoku(object):
         if self.undo_button.collidepoint(mx,my):
             self.undo()
             return
+        if self.restart_button.collidepoint(mx,my):
+            self.restart()
+            return
         if self.sysStat == 1 or self.ai_thinking or self.turn != self.human_color:
             return
-        x = round((mx - self.x0 - BOARD_X0) / BOARD_SIZE)
-        y = round((my - self.y0 - BOARD_Y0) / BOARD_SIZE)
-        if not (0 <= x < BOARD_ORDER and 0 <= y < BOARD_ORDER):
+        cell = self.point_to_cell(mx,my)
+        if cell is None:
             return
+        x,y = cell
         if self.grid[y][x] != GRID_NULL:
             return
+        self.hover_cell = None
 
         self.grid[y][x] = self.human_color
         self.move_count += 1
@@ -599,13 +1075,10 @@ class CLS_gomoku(object):
         self.move_history.append((x,y,self.human_color))
         self.last_move = (x,y)
         if is_five(self.grid, x, y, self.human_color):
-            self.winner = self.human_color
-            self.sysStat = 1
-            print('You win!!!')
+            self._finish_game(self.human_color,'You win!!!')
             return
         if board_full(self.grid):
-            self.winner = GRID_NULL
-            self.sysStat = 1
+            self._finish_game(GRID_NULL)
             return
 
         self.turn = self.ai_color
@@ -619,31 +1092,64 @@ class CLS_gomoku(object):
             self.select_color(GRID_WHITE)
             return
         if key == pygame.K_c:
+            self._archive_unfinished_game('color_selection_requested')
             self.grid_init(None)
             return
         if key in (pygame.K_u,pygame.K_BACKSPACE):
             self.undo()
             return
         if key in (pygame.K_RETURN,pygame.K_r):
-            self.grid_init(self.human_color)
-            if self.ai_color == GRID_BLACK:
-                self._start_ai_move()
+            self.restart()
         if key == pygame.K_s:
             self.assessFlag = not self.assessFlag
         return
 
 
+def enable_dpi_awareness():
+    """Ask Windows for real pixels so the window is not bitmap-stretched.
+
+    在 Windows 上声明 DPI 感知，避免系统把窗口放大导致模糊。
+    """
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def window_scale():
+    """Shrink the frame only when the desktop cannot show it at 1:1."""
+    try:
+        width,height = pygame.display.get_desktop_sizes()[0]
+    except Exception:
+        info = pygame.display.Info()
+        width,height = info.current_w,info.current_h
+    scale = min(1.0,(width - 40) / SCREEN_WIDTH,(height - 90) / SCREEN_HEIGHT)
+    return max(0.55,scale)
+
+
 #-------main--------
 def main():
+    enable_dpi_awareness()
     pygame.init()
-    pygame.display.set_caption(APP_TITLE)
-    screen = pygame.display.set_mode((SCREEN_WIDTH,SCREEN_HEIGHT))
+    pygame.display.set_caption(APP_CAPTION)
+    scale = window_scale()
+    window = pygame.display.set_mode(
+        (round(SCREEN_WIDTH * scale),round(SCREEN_HEIGHT * scale))
+    )
+    canvas = window if scale == 1.0 else pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT))
     asset_dir = Path(__file__).resolve().parent
-    wPic = pygame.image.load(str(asset_dir / 'WCMan.bmp'))
-    wPic.set_colorkey((255,0,0))
-    bPic = pygame.image.load(str(asset_dir / 'BCMan.bmp'))
-    bPic.set_colorkey((255,0,0))
+    # Stones are generated rather than loaded, so they stay crisp at any size.
+    bPic = make_stone(STONE_D,(8,8,9),(74,72,76),spec=86,rim=(96,92,90))
+    wPic = make_stone(STONE_D,(219,213,200),(255,253,248),spec=150,rim=(206,199,184))
     ai_agent = None
+    from alphazero_training.game_logger import GameReplayLogger
+    game_logger = GameReplayLogger(asset_dir / 'alphazero_training' / 'play_logs')
     checkpoint_path = asset_dir / 'alphazero_training' / 'latest.pt'
     try:
         from alphazero_training.play_agent import AlphaZeroGomokuAgent
@@ -654,23 +1160,31 @@ def main():
         print('Loaded:',ai_agent.label,'checkpoint iteration',ai_agent.iteration)
     except Exception as exc:
         print('Could not load AlphaZero model; using heuristic AI:',exc)
-    gomoku = CLS_gomoku(bPic,wPic,30,80,ai_agent)
+    gomoku = CLS_gomoku(bPic,wPic,BOARD_X,BOARD_Y,ai_agent,game_logger)
     clock = pygame.time.Clock()
+
+    def to_canvas(pos):
+        return (pos[0] / scale,pos[1] / scale)
 
     running = True
     while running:
         for event in pygame.event.get():
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                gomoku.mouse_down(*event.pos)
+                gomoku.mouse_down(*to_canvas(event.pos))
+            elif event.type == pygame.MOUSEMOTION:
+                gomoku.set_pointer(*to_canvas(event.pos))
             elif event.type == pygame.KEYDOWN:
                 gomoku.eventkey(event.key)
             elif event.type == pygame.QUIT:
                 running = False
         gomoku.update()
-        gomoku.draw(screen)
+        gomoku.draw(canvas)
+        if canvas is not window:
+            pygame.transform.smoothscale(canvas,window.get_size(),window)
         pygame.display.update()
         clock.tick(60)
 
+    gomoku.close()
     pygame.quit()
     return 0
 

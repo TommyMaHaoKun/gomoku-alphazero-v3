@@ -41,6 +41,7 @@ if str(ROOT) not in sys.path:
 
 from alphazero_training.play_agent import (
     AlphaZeroGomokuAgent,
+    CURRENT_MODEL_LABEL,
     DEFAULT_PLAY_SIMULATIONS,
     configured_play_simulations,
 )
@@ -97,6 +98,8 @@ def main() -> int:
     agent = AlphaZeroGomokuAgent(CHECKPOINT_PATH, simulations=8)
     if agent.simulations != 8 or "8 MCTS" not in agent.search_label:
         raise AssertionError("desktop MCTS label does not match the active budget")
+    if agent.model_label != CURRENT_MODEL_LABEL:
+        raise AssertionError("desktop model label does not match the approved release")
     checked = 0
     for ai_color in (1, 2):
         for name, grid, expected in tactical_cases():
@@ -153,19 +156,40 @@ def main() -> int:
                         return x, y
             return None
 
-    ui = load_game_module_cached.CLS_gomoku(
-        pygame.Surface((30, 30)),
-        pygame.Surface((30, 30)),
-        30,
-        80,
+    game = load_game_module_cached
+    stone = game.make_stone(game.STONE_D, (8, 8, 9), (74, 72, 76))
+    ui = game.CLS_gomoku(
+        stone,
+        stone,
+        game.BOARD_X,
+        game.BOARD_Y,
         FirstEmptyAgent(),
     )
     for star_y in (3, 9, 15):
         for star_x in (3, 9, 15):
-            pixel_x = load_game_module_cached.BOARD_X0 + star_x * load_game_module_cached.BOARD_SIZE + 2
-            pixel_y = load_game_module_cached.BOARD_Y0 + star_y * load_game_module_cached.BOARD_SIZE + 2
-            if ui.board.get_at((pixel_x, pixel_y))[:3] != (0, 0, 0):
+            pixel_x = game.BOARD_X0 + star_x * game.BOARD_SIZE
+            pixel_y = game.BOARD_Y0 + star_y * game.BOARD_SIZE
+            if ui.board.get_at((pixel_x, pixel_y))[:3] != game.BOARD_STAR:
                 raise AssertionError(f"missing star point at {(star_x, star_y)}")
+
+    def ai_ring_at(surface, cell):
+        """True when the clay latest-AI-move ring is drawn around ``cell``.
+
+        The ring is antialiased, so sample a few points on it and allow a
+        tolerance instead of demanding one exact pixel.
+        环形标记是抗锯齿绘制的，因此采样若干点并允许颜色误差。
+        """
+        cx, cy = ui.cell_center(*cell)
+        radius = game.STONE_D // 2 + 4
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            for step in (-1, 0, 1):
+                px, py = cx + dx * (radius + step), cy + dy * (radius + step)
+                if not surface.get_rect().collidepoint(px, py):
+                    continue
+                pixel = surface.get_at((px, py))[:3]
+                if max(abs(a - b) for a, b in zip(pixel, game.ACCENT)) <= 40:
+                    return True
+        return False
 
     def finish_ai_move():
         deadline = time.time() + 3
@@ -184,20 +208,19 @@ def main() -> int:
     if ui.move_numbers[9][9] != 1 or ui.move_numbers[0][0] != 2:
         raise AssertionError("black-first move numbering regression")
 
-    rendered = pygame.Surface((800, 680))
+    rendered = pygame.Surface((game.SCREEN_WIDTH, game.SCREEN_HEIGHT))
     ui.draw(rendered)
-    if rendered.get_at((ui.x0, ui.y0))[:3] != (235, 0, 180):
+    if not ai_ring_at(rendered, (0, 0)):
         raise AssertionError("white AI outline regression")
 
-    next_x = ui.x0 + load_game_module_cached.BOARD_X0 + 10 * load_game_module_cached.BOARD_SIZE
-    next_y = ui.y0 + load_game_module_cached.BOARD_Y0 + 9 * load_game_module_cached.BOARD_SIZE
+    next_x = ui.x0 + game.BOARD_X0 + 10 * game.BOARD_SIZE
+    next_y = ui.y0 + game.BOARD_Y0 + 9 * game.BOARD_SIZE
     ui.mouse_down(next_x, next_y)
     finish_ai_move()
-    rendered.fill((0, 0, 0))
     ui.draw(rendered)
-    if rendered.get_at((ui.x0, ui.y0))[:3] == (235, 0, 180):
+    if ai_ring_at(rendered, (0, 0)):
         raise AssertionError("old AI outline was not cleared")
-    if rendered.get_at((ui.x0 + load_game_module_cached.BOARD_SIZE, ui.y0))[:3] != (235, 0, 180):
+    if not ai_ring_at(rendered, (1, 0)):
         raise AssertionError("latest AI outline did not move")
 
     # Undo removes one complete human turn, including the AI response, and
@@ -216,9 +239,8 @@ def main() -> int:
     finish_ai_move()
     if ui.move_numbers[0][0] != 1:
         raise AssertionError("white-second move numbering regression")
-    rendered.fill((0, 0, 0))
     ui.draw(rendered)
-    if rendered.get_at((ui.x0, ui.y0))[:3] != (235, 0, 180):
+    if not ai_ring_at(rendered, (0, 0)):
         raise AssertionError("black AI outline regression")
     if ui.can_undo():
         raise AssertionError("AI opening move must not be undoable by itself")
