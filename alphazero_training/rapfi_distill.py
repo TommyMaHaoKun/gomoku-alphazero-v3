@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -44,6 +44,8 @@ REPORT_TYPE = "rapfi_student_distillation"
 
 _WORKER_AGENT: AlphaZeroGomokuAgent | None = None
 _WORKER_RAPFI: RapfiAdapter | None = None
+_WORKER_RAPFI_CONFIG: dict[str, object] | None = None
+PAIR_ATTEMPTS = 3
 
 
 @dataclass
@@ -135,7 +137,7 @@ def _worker_initialize(
     engine_threads: int,
     engine_memory_mb: int,
 ) -> None:
-    global _WORKER_AGENT, _WORKER_RAPFI
+    global _WORKER_AGENT, _WORKER_RAPFI, _WORKER_RAPFI_CONFIG
     if _WORKER_AGENT is not None or _WORKER_RAPFI is not None:
         raise RuntimeError("Rapfi distillation worker initialized twice")
     _WORKER_AGENT = AlphaZeroGomokuAgent(Path(checkpoint), simulations=simulations)
@@ -144,13 +146,25 @@ def _worker_initialize(
         or _WORKER_AGENT.config.win_length != 5
     ):
         raise RuntimeError("distillation requires a 19x19 freestyle-five checkpoint")
-    _WORKER_RAPFI = RapfiAdapter(
-        Path(engine),
-        timeout_turn_ms=timeout_turn_ms,
-        max_nodes=max_nodes,
-        threads=engine_threads,
-        max_memory_mb=engine_memory_mb,
-    )
+    _WORKER_RAPFI_CONFIG = {
+        "engine_path": Path(engine),
+        "timeout_turn_ms": timeout_turn_ms,
+        "max_nodes": max_nodes,
+        "threads": engine_threads,
+        "max_memory_mb": engine_memory_mb,
+    }
+    _restart_worker_rapfi()
+
+
+def _restart_worker_rapfi() -> None:
+    """Replace a possibly desynchronised protocol subprocess."""
+
+    global _WORKER_RAPFI
+    if _WORKER_RAPFI_CONFIG is None:
+        raise RuntimeError("Rapfi worker configuration is unavailable")
+    if _WORKER_RAPFI is not None:
+        _WORKER_RAPFI.close(force=True)
+    _WORKER_RAPFI = RapfiAdapter(**_WORKER_RAPFI_CONFIG)
 
 
 def _play_game(
@@ -264,10 +278,43 @@ def _worker_pair(
     opening: list[tuple[int, int]],
     max_moves: int,
 ) -> list[GameRecord]:
-    return [
-        _play_game(pair_index, opening, student_color, max_moves)
-        for student_color in (BLACK, WHITE)
-    ]
+    last_records: list[GameRecord] = []
+    for attempt in range(1, PAIR_ATTEMPTS + 1):
+        records: list[GameRecord] = []
+        for student_color in (BLACK, WHITE):
+            record = _play_game(pair_index, opening, student_color, max_moves)
+            records.append(record)
+            if record.error is not None:
+                # Protocol errors can leave BOARD/DONE responses queued.  A
+                # fresh engine prevents one transient fault from poisoning the
+                # colour-swapped game or the next pair assigned to this worker.
+                _restart_worker_rapfi()
+        if len(records) == 2 and all(record.error is None for record in records):
+            return records
+        last_records = records
+        if attempt < PAIR_ATTEMPTS:
+            _restart_worker_rapfi()
+    return last_records
+
+
+def successful_pair_indices(records: Sequence[GameRecord]) -> set[int]:
+    """Return only fully successful colour-swapped pairs eligible for resume."""
+
+    grouped: dict[int, list[GameRecord]] = {}
+    for record in records:
+        grouped.setdefault(record.pair_index, []).append(record)
+    return {
+        pair_index
+        for pair_index, group in grouped.items()
+        if len(group) == 2
+        and {record.student_color for record in group} == {BLACK, WHITE}
+        and all(
+            record.error is None
+            and record.student_result is not None
+            and record.termination in ("win", "full_board_draw")
+            for record in group
+        )
+    }
 
 
 def _atomic_json(path: Path, payload: object) -> None:
@@ -604,11 +651,7 @@ def main() -> None:
     openings = [generate_opening(rng, args.opening_plies) for _ in range(args.pairs)]
     signature = _runtime_signature(args, openings)
     records = _load_resume(args.report, signature)
-    complete_pairs = {
-        record.pair_index
-        for record in records
-        if sum(r.pair_index == record.pair_index for r in records) == 2
-    }
+    complete_pairs = successful_pair_indices(records)
     pending = [index for index in range(args.pairs) if index not in complete_pairs]
     print(
         f"Rapfi distillation: {len(complete_pairs)}/{args.pairs} pairs resumed, "

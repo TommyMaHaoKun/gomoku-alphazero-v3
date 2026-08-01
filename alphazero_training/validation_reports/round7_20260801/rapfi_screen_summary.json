@@ -1,0 +1,158 @@
+{
+  "round7_a010": {
+    "format_version": 1,
+    "parent_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/parent/games.json",
+    "candidate_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/round7_a010/games.json",
+    "parent_checkpoint_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+    "candidate_checkpoint_sha256": "17cab93cb94ab6d127ef13502c9124e59e994c4f66a5fe4f3c996b8096864e8e",
+    "pairs": 256,
+    "parent_score": 0.224609375,
+    "candidate_score": 0.236328125,
+    "score_delta": 0.01171875,
+    "paired_opening_gains": 27,
+    "paired_opening_losses": 21,
+    "paired_opening_unchanged": 208,
+    "two_sided_exact_sign_p": 0.4708790136217118,
+    "statistically_significant_at_0_05": false,
+    "parent_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 115,
+        "losses": 141,
+        "draws": 0,
+        "score": 0.44921875
+      },
+      "white": {
+        "games": 256,
+        "wins": 0,
+        "losses": 256,
+        "draws": 0,
+        "score": 0.0
+      }
+    },
+    "candidate_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 120,
+        "losses": 136,
+        "draws": 0,
+        "score": 0.46875
+      },
+      "white": {
+        "games": 256,
+        "wins": 1,
+        "losses": 255,
+        "draws": 0,
+        "score": 0.00390625
+      }
+    },
+    "parent_student_teacher_agreement_rate": 0.47434915773353753,
+    "candidate_student_teacher_agreement_rate": 0.49295506473724293,
+    "recommendation": "continue_independent_evaluation",
+    "comparison_sha256": "9a5221390169e41a8b5ea0fb1b7c39ac0d43c96fe2ee1604bf9cd91857ed8fad"
+  },
+  "round7_a020": {
+    "format_version": 1,
+    "parent_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/parent/games.json",
+    "candidate_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/round7_a020/games.json",
+    "parent_checkpoint_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+    "candidate_checkpoint_sha256": "3c4a8501edf7b27b49224623439e8c79c3a8d29a9398cc2c3b7d585b86aad554",
+    "pairs": 256,
+    "parent_score": 0.224609375,
+    "candidate_score": 0.224609375,
+    "score_delta": 0.0,
+    "paired_opening_gains": 20,
+    "paired_opening_losses": 20,
+    "paired_opening_unchanged": 216,
+    "two_sided_exact_sign_p": 1.0,
+    "statistically_significant_at_0_05": false,
+    "parent_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 115,
+        "losses": 141,
+        "draws": 0,
+        "score": 0.44921875
+      },
+      "white": {
+        "games": 256,
+        "wins": 0,
+        "losses": 256,
+        "draws": 0,
+        "score": 0.0
+      }
+    },
+    "candidate_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 115,
+        "losses": 141,
+        "draws": 0,
+        "score": 0.44921875
+      },
+      "white": {
+        "games": 256,
+        "wins": 0,
+        "losses": 256,
+        "draws": 0,
+        "score": 0.0
+      }
+    },
+    "parent_student_teacher_agreement_rate": 0.47434915773353753,
+    "candidate_student_teacher_agreement_rate": 0.490126010908407,
+    "recommendation": "continue_independent_evaluation",
+    "comparison_sha256": "f9124345b5b758352d19a048a8c18d475f49b0cdb04622b3df407a7d5ec67b94"
+  },
+  "round7_a035": {
+    "format_version": 1,
+    "parent_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/parent/games.json",
+    "candidate_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_screen_seed20280806/round7_a035/games.json",
+    "parent_checkpoint_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+    "candidate_checkpoint_sha256": "3a2f343985f56e6212118936cf6df67beff01b7bfaaef9538d97c3d4fa37075b",
+    "pairs": 256,
+    "parent_score": 0.224609375,
+    "candidate_score": 0.265625,
+    "score_delta": 0.041015625,
+    "paired_opening_gains": 34,
+    "paired_opening_losses": 13,
+    "paired_opening_unchanged": 209,
+    "two_sided_exact_sign_p": 0.0030876764615186403,
+    "statistically_significant_at_0_05": true,
+    "parent_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 115,
+        "losses": 141,
+        "draws": 0,
+        "score": 0.44921875
+      },
+      "white": {
+        "games": 256,
+        "wins": 0,
+        "losses": 256,
+        "draws": 0,
+        "score": 0.0
+      }
+    },
+    "candidate_by_color": {
+      "black": {
+        "games": 256,
+        "wins": 136,
+        "losses": 120,
+        "draws": 0,
+        "score": 0.53125
+      },
+      "white": {
+        "games": 256,
+        "wins": 0,
+        "losses": 256,
+        "draws": 0,
+        "score": 0.0
+      }
+    },
+    "parent_student_teacher_agreement_rate": 0.47434915773353753,
+    "candidate_student_teacher_agreement_rate": 0.512588512981904,
+    "recommendation": "eligible_for_non_regression_gates",
+    "comparison_sha256": "44dc315f9f99fc5fade14854cc7d3f3486a4aa8d1c172f5100b59f375666c8a1"
+  }
+}

@@ -36,6 +36,7 @@ alphazero_training/_v3*/
 alphazero_training/replay/
 alphazero_training/run*/
 alphazero_training/play_logs/
+alphazero_training/training_logs/
 alphazero_training/rapfi_distillation/
 
 # Frozen local training archives (kept in the project folder, not published)

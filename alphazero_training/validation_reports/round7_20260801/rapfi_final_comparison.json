@@ -1,0 +1,52 @@
+{
+  "format_version": 1,
+  "parent_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_final_seed20280807/parent/games.json",
+  "candidate_report": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/rapfi_final_seed20280807/round7_a035/games.json",
+  "parent_checkpoint_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+  "candidate_checkpoint_sha256": "3a2f343985f56e6212118936cf6df67beff01b7bfaaef9538d97c3d4fa37075b",
+  "pairs": 1024,
+  "parent_score": 0.22802734375,
+  "candidate_score": 0.25537109375,
+  "score_delta": 0.02734375,
+  "paired_opening_gains": 145,
+  "paired_opening_losses": 89,
+  "paired_opening_unchanged": 790,
+  "two_sided_exact_sign_p": 0.0003049636642348137,
+  "statistically_significant_at_0_05": true,
+  "parent_by_color": {
+    "black": {
+      "games": 1024,
+      "wins": 462,
+      "losses": 562,
+      "draws": 0,
+      "score": 0.451171875
+    },
+    "white": {
+      "games": 1024,
+      "wins": 5,
+      "losses": 1019,
+      "draws": 0,
+      "score": 0.0048828125
+    }
+  },
+  "candidate_by_color": {
+    "black": {
+      "games": 1024,
+      "wins": 518,
+      "losses": 506,
+      "draws": 0,
+      "score": 0.505859375
+    },
+    "white": {
+      "games": 1024,
+      "wins": 5,
+      "losses": 1019,
+      "draws": 0,
+      "score": 0.0048828125
+    }
+  },
+  "parent_student_teacher_agreement_rate": 0.4831251787586996,
+  "candidate_student_teacher_agreement_rate": 0.5070116531700573,
+  "recommendation": "eligible_for_non_regression_gates",
+  "comparison_sha256": "d5aacb15d0ef1dc17393ae4bcb00e6b6f5fbb79888c4ede9c2a5c182185b11c0"
+}

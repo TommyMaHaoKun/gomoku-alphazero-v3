@@ -8,6 +8,33 @@ positions, the tactical curriculum, and an optional manifest-authenticated
 white-defense curriculum.  Active games share tactical routing, root
 evaluation, and leaf inference batches while keeping the replay and checkpoint
 contracts auditable.
+
+Architecture / 代码架构
+-----------------------
+This V3 pipeline extends the base model without changing the legacy trainer.
+``V3RootSearch`` generates tactically filtered self-play. Static replay sources
+and the circular self-play replay are combined by ``SourceMixer``. Mixed
+batches train ``PolicyValueNet``; manifests, replay chunks, RNG states, and
+atomic checkpoints make every resume auditable.
+
+V3 流水线在不改动旧训练器的情况下扩展基础模型。``V3RootSearch`` 生成经过战术
+过滤的自我对弈；静态数据源与循环自我对弈回放由 ``SourceMixer`` 按比例混合；
+混合批次训练 ``PolicyValueNet``。清单、回放分块、随机数状态和原子检查点让每次
+恢复都可以审计。
+
+Key algorithms / 重要算法
+-------------------------
+Parallel self-play shares batched neural inference. Source quotas control the
+ratio of fresh self-play, teacher, tactical, and optional white-defense data.
+Weighted policy/value losses and an optional safe-vs-unsafe margin loss update
+the network with AdamW and a warmup/cosine schedule. ``candidate_model`` is the
+new network under evaluation; ``best_model`` remains the accepted champion
+until an external gate approves promotion.
+
+并行自我对弈共享批量神经网络推理。数据源配额控制新鲜自我对弈、教师、战术和可选
+白棋防守数据的比例。加权策略/价值损失及可选的安全-危险间隔损失通过 AdamW 与
+预热/余弦学习率更新网络。``candidate_model`` 是待评估的新网络，``best_model``
+在外部门控批准晋级前始终保留为已接受冠军。
 """
 
 from __future__ import annotations
@@ -41,6 +68,7 @@ from .train_alphazero import (
     PolicyValueNet,
 )
 from .v3_search import V3RootSearch
+from .training_audit import TrainingAudit, add_audit_arguments
 
 
 STOP_REQUESTED = False
@@ -1948,6 +1976,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every-steps", type=int)
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument("--smoke", action="store_true")
+    add_audit_arguments(parser)
     return parser.parse_args()
 
 
@@ -2000,7 +2029,13 @@ def _white_defense_manifest_path(
 def main() -> int:
     args = parse_args()
     output_dir = args.output_dir.resolve()
+    audit = TrainingAudit.from_namespace(
+        args,
+        trainer="train_v3_selfplay",
+        config=vars(args),
+    )
     configure_logging(output_dir)
+    audit.event("phase", {"name": "initialization", "state": "started"}, force=True)
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
 
@@ -2054,6 +2089,7 @@ def main() -> int:
         if args.init_checkpoint is None:
             raise ValueError("--init-checkpoint is required for a new V3 run")
         init_path = args.init_checkpoint.resolve()
+        audit.record_artifact(init_path, role="input_checkpoint")
         warm = torch.load(init_path, map_location="cpu", weights_only=False)
         if (
             warm.get("format_version") != 3
@@ -2077,6 +2113,7 @@ def main() -> int:
             raise ValueError("resume checkpoint best_model is not the approved champion")
     elif args.approved_checkpoint is not None:
         approved_path = args.approved_checkpoint.resolve()
+        audit.record_artifact(approved_path, role="approved_checkpoint")
         approved_checkpoint = torch.load(
             approved_path, map_location="cpu", weights_only=False
         )
@@ -2135,6 +2172,12 @@ def main() -> int:
         raise ValueError(
             "positive --white-defense-quota requires an authenticated white-defense dataset"
         )
+    audit.record_artifact(expert_path, role="expert_dataset")
+    audit.record_artifact(tactical_path, role="tactical_dataset")
+    if white_defense_path is not None:
+        audit.record_artifact(white_defense_path, role="white_defense_dataset")
+    if white_defense_manifest_path is not None:
+        audit.record_artifact(white_defense_manifest_path, role="dataset_manifest")
 
     static_sources: dict[str, StaticReplaySource] = {
         "ddqk": StaticReplaySource("ddqk", expert_path, search_config.board_size, loop_config.seed + 11),
@@ -2215,6 +2258,7 @@ def main() -> int:
     start_iteration = 1
     global_step = 0
     if resume_path is not None:
+        audit.record_artifact(resume_path, role="resume_checkpoint")
         restored = restore_v3_checkpoint(
             resume_path,
             model=model,
@@ -2287,9 +2331,19 @@ def main() -> int:
             metrics={"status": "initialized", "replay_loaded": loaded},
             sampler_rng_state=sampler_rng_state(replay, static_sources, mixer),
         )
+        audit.record_artifact(latest_path, role="training_checkpoint_initialized")
+    audit.event("phase", {"name": "selfplay_training", "state": "started"}, force=True)
+    completed_iteration = start_iteration - 1
     for iteration in range(start_iteration, loop_config.iterations + 1):
         if STOP_REQUESTED:
             break
+        if audit.check_control():
+            audit.finish(
+                "stopped",
+                {"iteration": iteration - 1, "reason": "control request"},
+            )
+            logging.info("V3 self-play stopped by audit control")
+            return 0
         iteration_started = time.perf_counter()
         generated, selfplay_metrics = generate_v3_selfplay(
             model,
@@ -2356,10 +2410,24 @@ def main() -> int:
             json.dumps(metrics, ensure_ascii=False),
             latest_path,
         )
+        audit.event(
+            "iteration_metrics",
+            {
+                "iteration": iteration,
+                "global_step": global_step,
+                "metrics": metrics,
+            },
+        )
+        audit.record_artifact(latest_path, role="training_checkpoint")
+        completed_iteration = iteration
         if STOP_REQUESTED:
             break
 
     logging.info("V3 self-play stopped cleanly")
+    audit.finish(
+        "stopped" if STOP_REQUESTED else "completed",
+        {"iteration": completed_iteration},
+    )
     return 0
 
 

@@ -4,6 +4,31 @@
 The trainer is intentionally self-contained so it can run unattended on a
 single GPU. It uses batched MCTS, a policy/value residual network, a circular
 replay buffer, arena gating, compressed replay chunks, and atomic checkpoints.
+
+Architecture / 代码架构
+-----------------------
+``Config`` defines one reproducible run. ``GomokuGame`` owns rules and the
+four-plane state encoding. ``PolicyValueNet`` predicts a policy and value.
+``Node`` plus the MCTS functions produce improved move targets. Self-play
+feeds ``ReplayBuffer``; ``train_steps`` updates the network; ``arena`` decides
+promotion; replay chunks and checkpoints make the run resumable.
+
+``Config`` 保存可复现的训练设置；``GomokuGame`` 负责规则和四平面输入编码；
+``PolicyValueNet`` 输出策略与价值；``Node`` 及 MCTS 函数生成更强的落子目标；
+自我对弈数据进入 ``ReplayBuffer``，``train_steps`` 更新网络，``arena`` 决定是否
+晋级，回放分块与检查点保证训练可恢复。
+
+Key algorithms / 重要算法
+-------------------------
+The model is a residual policy-value network. Batched MCTS uses PUCT, neural
+priors, value backup, root Dirichlet noise, and temperature sampling. Training
+minimizes policy cross-entropy plus value mean-squared error with AdamW. A
+candidate replaces the champion only after paired arena evaluation; failed
+candidates roll back. Checkpoints are written atomically.
+
+模型采用残差策略-价值网络。批量 MCTS 使用 PUCT、神经网络先验、价值回传、根节点
+Dirichlet 噪声和温度采样。AdamW 最小化策略交叉熵与价值均方误差之和。候选模型
+只有通过交换黑白的竞技场评估才会替换冠军；失败则回滚。检查点采用原子写入。
 """
 
 from __future__ import annotations
@@ -24,6 +49,11 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+try:
+    from .training_audit import TrainingAudit, add_audit_arguments
+except ImportError:  # Support direct ``python train_alphazero.py`` execution.
+    from training_audit import TrainingAudit, add_audit_arguments  # type: ignore
 
 
 BLACK = 1
@@ -894,11 +924,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument("--init-checkpoint", type=Path, default=None)
     parser.add_argument("--no-arena", action="store_true")
+    add_audit_arguments(parser)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    audit = TrainingAudit.from_namespace(
+        args,
+        trainer="train_alphazero",
+        config=vars(args),
+    )
     config = Config()
     for argument, attribute in (
         (args.simulations, "simulations"),
@@ -915,6 +951,7 @@ def main() -> int:
         config.eval_interval = 0
 
     configure_logging(args.output)
+    audit.event("phase", {"name": "initialization", "state": "started"}, force=True)
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
     random.seed(config.seed)
@@ -954,6 +991,7 @@ def main() -> int:
     checkpoint_path = args.output / "latest.pt"
     start_iteration = 1
     if checkpoint_path.exists():
+        audit.record_artifact(checkpoint_path, role="resume_checkpoint")
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         train_model.load_state_dict(checkpoint["train_model"])
         best_model.load_state_dict(checkpoint["best_model"])
@@ -961,6 +999,7 @@ def main() -> int:
         start_iteration = int(checkpoint["iteration"]) + 1
         logging.info("resumed checkpoint at iteration %d", start_iteration - 1)
     elif args.init_checkpoint is not None:
+        audit.record_artifact(args.init_checkpoint, role="input_checkpoint")
         checkpoint = torch.load(args.init_checkpoint, map_location=device, weights_only=False)
         source_state = checkpoint.get("best_model", checkpoint.get("train_model"))
         train_model.load_state_dict(source_state)
@@ -979,8 +1018,18 @@ def main() -> int:
         replay.size,
     )
     logging.info("initial checkpoint ready at %s", checkpoint_path)
+    audit.record_artifact(checkpoint_path, role="training_checkpoint_initialized")
 
+    audit.event("phase", {"name": "selfplay_training", "state": "started"}, force=True)
+    completed_iteration = start_iteration - 1
     for iteration in range(start_iteration, config.max_iterations + 1):
+        if audit.check_control():
+            audit.finish(
+                "stopped",
+                {"iteration": completed_iteration, "reason": "control request"},
+            )
+            logging.info("training stopped by audit control")
+            return 0
         iteration_start = time.time()
         logging.info("iteration %d: self-play started", iteration)
         states, policies, values, selfplay_stats = generate_selfplay(
@@ -1042,10 +1091,28 @@ def main() -> int:
             time.time() - iteration_start,
             checkpoint_path,
         )
+        audit.event(
+            "iteration_metrics",
+            {
+                "iteration": iteration,
+                "selfplay": selfplay_stats,
+                "training": training_stats if replay.size >= config.min_replay_size else None,
+                "arena": arena_stats
+                if config.eval_interval and iteration % config.eval_interval == 0
+                else None,
+                "replay_size": replay.size,
+            },
+        )
+        audit.record_artifact(checkpoint_path, role="training_checkpoint")
+        completed_iteration = iteration
         if STOP_REQUESTED:
             break
 
     logging.info("training stopped cleanly")
+    audit.finish(
+        "stopped" if STOP_REQUESTED else "completed",
+        {"iteration": completed_iteration},
+    )
     return 0
 
 

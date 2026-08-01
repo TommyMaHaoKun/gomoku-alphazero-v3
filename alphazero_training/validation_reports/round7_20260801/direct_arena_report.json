@@ -1,0 +1,61 @@
+{
+  "format_version": 1,
+  "report_type": "paired_model_arena",
+  "complete": true,
+  "candidate": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/round7_league_selfplay/round7_a035_eval.pt",
+  "candidate_sha256": "3a2f343985f56e6212118936cf6df67beff01b7bfaaef9538d97c3d4fa37075b",
+  "champion": "/root/autodl-tmp/gomoku_v3/alphazero_training/latest.pt",
+  "champion_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+  "seed": 20280808,
+  "opening_plies": 6,
+  "simulations": 64,
+  "summary": {
+    "pairs": 1024,
+    "games": 2048,
+    "candidate_score": 0.54248046875,
+    "champion_score": 0.45751953125,
+    "score_delta": 0.0849609375,
+    "paired_gains": 136,
+    "paired_losses": 49,
+    "paired_unchanged": 839,
+    "two_sided_exact_sign_p": 1.1665548294602713e-10,
+    "statistically_significant_at_0_05": true,
+    "candidate_by_color": {
+      "black": {
+        "games": 1024,
+        "wins": 886,
+        "draws": 1,
+        "losses": 137,
+        "score": 0.86572265625
+      },
+      "white": {
+        "games": 1024,
+        "wins": 224,
+        "draws": 1,
+        "losses": 799,
+        "score": 0.21923828125
+      }
+    },
+    "champion_by_color": {
+      "black": {
+        "games": 1024,
+        "wins": 799,
+        "draws": 1,
+        "losses": 224,
+        "score": 0.78076171875
+      },
+      "white": {
+        "games": 1024,
+        "wins": 137,
+        "draws": 1,
+        "losses": 886,
+        "score": 0.13427734375
+      }
+    },
+    "color_non_regression_tolerance": 0.02,
+    "color_non_regression": true,
+    "hard_gate_passed": true
+  },
+  "records_sha256": "cbf6636565b61c2418e0d09bbbe88b3e46ce38b63676f1b3ea578e0812ab26c2",
+  "report_sha256": "fb05aefde2e87b2d120aaf55e27f0dbcb26776469e98d3318f605547c218fced"
+}

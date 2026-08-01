@@ -32,6 +32,7 @@ from .train_v3_selfplay import (
     safe_hard_negative_margin_loss,
     validate_white_defense_manifest,
 )
+from .training_audit import TrainingAudit, add_audit_arguments
 
 
 def sha256_file(path: Path) -> str:
@@ -581,6 +582,18 @@ def unfreeze_all_parameters(model: nn.Module) -> None:
         parameter.requires_grad_(True)
 
 
+def configure_trainable_heads(model: PolicyValueNet, train_heads: str) -> None:
+    """Restrict optimization to the selected output heads after trunk setup."""
+    if train_heads not in {"both", "policy", "value"}:
+        raise ValueError("train_heads must be one of: both, policy, value")
+    if train_heads == "both":
+        return
+    frozen_prefix = "value_" if train_heads == "policy" else "policy_"
+    for name, parameter in model.named_parameters():
+        if name.startswith(frozen_prefix):
+            parameter.requires_grad_(False)
+
+
 @torch.inference_mode()
 def evaluate(
     model: PolicyValueNet,
@@ -750,6 +763,7 @@ def save_checkpoint(
     policy_distill_scale: float,
     freeze_trunk_steps: int,
     train_last_residual_blocks_during_freeze: int,
+    train_heads: str = "both",
     safe_hard_negative_scale: float = 0.0,
     safe_hard_negative_margin: float = 1.0,
     mistake_hard_negative_scale: float = 0.0,
@@ -776,6 +790,7 @@ def save_checkpoint(
             "train_last_residual_blocks_during_freeze": int(
                 train_last_residual_blocks_during_freeze
             ),
+            "train_heads": train_heads,
         },
         "model_spec": {
             "board_size": config.board_size,
@@ -937,6 +952,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--train-heads",
+        choices=("both", "policy", "value"),
+        default="both",
+        help="optionally freeze one output head while training (default: both)",
+    )
+    parser.add_argument(
         "--value-loss-scale",
         type=float,
         default=1.0,
@@ -995,7 +1016,15 @@ def main() -> None:
         help="update BatchNorm on curriculum data (disabled by default to avoid drift)",
     )
     parser.add_argument("--seed", type=int, default=20260722)
+    add_audit_arguments(parser)
     args = parser.parse_args()
+
+    audit = TrainingAudit.from_namespace(
+        args,
+        trainer="train_v3_supervised",
+        config=vars(args),
+    )
+    audit.event("phase", {"name": "validation", "state": "started"}, force=True)
 
     if args.steps <= 0 or args.batch_size <= 0:
         raise SystemExit("steps and batch size must be positive")
@@ -1052,6 +1081,13 @@ def main() -> None:
         torch.set_float32_matmul_precision("high")
 
     init_path = args.init_checkpoint.resolve()
+    audit.record_artifact(init_path, role="input_checkpoint")
+    for dataset_path in args.dataset:
+        audit.record_artifact(dataset_path, role="training_dataset")
+    for dataset_path in args.white_defense_npz or []:
+        audit.record_artifact(dataset_path, role="white_defense_dataset")
+    for manifest_path in args.white_defense_manifest or []:
+        audit.record_artifact(manifest_path, role="dataset_manifest")
     parent = torch.load(init_path, map_location="cpu", weights_only=False)
     config = Config(**parent["config"])
     model = PolicyValueNet(config.board_size, config.channels, config.residual_blocks).to(device)
@@ -1118,14 +1154,18 @@ def main() -> None:
             model,
             args.train_last_residual_blocks_during_freeze,
         )
+    configure_trainable_heads(model, args.train_heads)
     if not args.update_batchnorm:
         hold_batchnorm_fixed(model)
 
     metrics = evaluate(model, pools, device)
     print(json.dumps({"step": 0, "validation": metrics}, ensure_ascii=False), flush=True)
+    audit.event("validation", {"step": 0, "metrics": metrics})
+    audit.event("phase", {"name": "training", "state": "started"}, force=True)
     for step in range(1, args.steps + 1):
         if step == args.freeze_trunk_steps + 1:
             unfreeze_all_parameters(model)
+            configure_trainable_heads(model, args.train_heads)
         model.train()
         if not args.update_batchnorm:
             hold_batchnorm_fixed(model)
@@ -1214,6 +1254,18 @@ def main() -> None:
         scheduler.step()
 
         if step == 1 or step % 25 == 0:
+            step_metrics = {
+                "step": step,
+                "steps": args.steps,
+                "loss": float(loss.detach()),
+                "policy_loss": float(policy_loss.detach()),
+                "value_loss": float(value_loss.detach()),
+                "value_distill_loss": float(value_distill_loss.detach()),
+                "policy_distill_loss": float(policy_distill_loss.detach()),
+                "safe_margin_loss": float(safe_margin_loss.detach()),
+                "mistake_margin_loss": float(mistake_margin_loss.detach()),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
             print(
                 f"step={step}/{args.steps} loss={float(loss.detach()):.4f} "
                 f"policy={float(policy_loss.detach()):.4f} "
@@ -1225,9 +1277,12 @@ def main() -> None:
                 f"lr={optimizer.param_groups[0]['lr']:.6g}",
                 flush=True,
             )
+            if audit.should_log_metric(step):
+                audit.event("train_metrics", step_metrics)
         if step % args.eval_every == 0 or step == args.steps:
             metrics = evaluate(model, pools, device)
             print(json.dumps({"step": step, "validation": metrics}, ensure_ascii=False), flush=True)
+            audit.event("validation", {"step": step, "metrics": metrics})
             save_checkpoint(
                 args.output.resolve(),
                 parent=parent,
@@ -1251,10 +1306,17 @@ def main() -> None:
                 train_last_residual_blocks_during_freeze=(
                     args.train_last_residual_blocks_during_freeze
                 ),
+                train_heads=args.train_heads,
                 white_defense_union_audit=white_defense_union_audit,
             )
+            audit.record_artifact(args.output.resolve(), role="training_checkpoint")
+            if audit.check_control():
+                audit.finish("stopped", {"step": step, "reason": "control request"})
+                print(f"checkpoint={args.output.resolve()}")
+                return
 
     print(f"checkpoint={args.output.resolve()}")
+    audit.finish("completed", {"steps": args.steps, "checkpoint": str(args.output.resolve())})
 
 
 if __name__ == "__main__":

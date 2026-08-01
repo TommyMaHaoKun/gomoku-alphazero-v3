@@ -1,4 +1,28 @@
-"""Inference adapter for using a trained AlphaZero checkpoint in the game UI."""
+"""Inference adapter for the trained Gargantua model / Gargantua 推理适配器。
+
+Architecture / 代码架构
+-----------------------
+The Pygame program passes a visible ``grid[y][x]`` board to
+``AlphaZeroGomokuAgent``.  This adapter loads ``latest.pt``, rebuilds the
+policy-value network, converts board values into ``GomokuGame``, and delegates
+the root decision to ``V3RootSearch``.  It then converts the row-major action
+back into an ``(x, y)`` coordinate for the interface.
+
+Pygame 程序把可见的 ``grid[y][x]`` 棋盘交给 ``AlphaZeroGomokuAgent``。本适配器
+加载 ``latest.pt``、重建策略-价值网络、把界面棋盘转换为 ``GomokuGame``，再调用
+``V3RootSearch``，最后将一维 action 转回界面使用的 ``(x, y)`` 坐标。
+
+Key algorithms / 重要算法
+-------------------------
+The checkpoint supplies the neural prior and value estimate; tactical-first
+MCTS chooses the move.  Desktop play defaults to 256 MCTS simulations, uses
+CUDA automatically when available, and serializes searches with a lock so one
+model instance cannot be searched concurrently by multiple UI workers.
+
+检查点提供神经网络的策略先验和局面价值，战术优先的 MCTS 决定最终落子。桌面端
+默认执行 256 次 MCTS 模拟；检测到 CUDA 时自动使用 GPU，并通过线程锁避免多个
+界面任务同时操作同一搜索器。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +48,11 @@ from .v3_search import V3RootSearch
 DEFAULT_PLAY_SIMULATIONS = 256
 PLAY_SIMULATIONS_ENV = "GOMOKU_MCTS_SIMULATIONS"
 MODEL_NAME = "Gargantua"
+MODEL_RELEASE_VERSION = "V3.2"
+MODEL_TRAINING_RELEASE = "R7"
+CURRENT_MODEL_LABEL = (
+    f"{MODEL_NAME} {MODEL_RELEASE_VERSION} {MODEL_TRAINING_RELEASE}"
+)
 
 
 def configured_play_simulations(simulations: int | None = None) -> int:
@@ -74,12 +103,15 @@ class AlphaZeroGomokuAgent:
         )
         raw_config = checkpoint["config"]
         format_version = int(checkpoint.get("format_version", 0))
-        self.training_version = (
-            "v3"
-            if format_version >= 3
-            else "v2"
-            if "candidate_radius" in raw_config
-            else "v1"
+        self.training_version = str(
+            checkpoint.get("model_version")
+            or (
+                "v3"
+                if format_version >= 3
+                else "v2"
+                if "candidate_radius" in raw_config
+                else "v1"
+            )
         )
         self.config = Config(**raw_config)
         self.simulations = configured_play_simulations(simulations)
@@ -108,7 +140,7 @@ class AlphaZeroGomokuAgent:
 
     @property
     def model_label(self) -> str:
-        return f"{MODEL_NAME} {self.training_version.upper()} i{self.iteration}"
+        return CURRENT_MODEL_LABEL
 
     @property
     def search_label(self) -> str:

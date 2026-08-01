@@ -4,12 +4,52 @@
 
 本目录包含模型推理、MCTS、战术/VCF 求解、自我对弈训练、外部引擎适配评测和回归测试。仓库只跟踪当前已批准的 `latest.pt`；其他 checkpoint、回放、数据集和评测报告均为本地生成物。
 
+当前桌面发布版本为 **Gargantua V3.2 R7**。`R7` 使用联盟自我博弈，同时保留Round 6高后悔、战术和白棋防守样本；候选通过独立Rapfi盲测和1024组交换色直接竞技场后才获准部署。
+
 常用验证命令：
 
 ```powershell
 python -m unittest discover -s alphazero_training -p "test_*.py"
 python .\alphazero_training\verify_play_integration.py
 ```
+
+## 标准化训练日志与运行控制
+
+三个训练入口 `train_alphazero.py`、`train_v3_selfplay.py` 和
+`train_v3_supervised.py` 默认启用统一训练审计。每次运行都会在
+`alphazero_training/training_logs/<run_id>/` 保存：
+
+- `manifest.json`：命令、完整配置、主机、Python、状态、起止时间和产物清单；
+- `events.jsonl`：阶段、每步/每轮指标、验证、checkpoint 与控制事件，事件间使用
+  SHA256 哈希链，修改历史记录会被校验器发现；
+- `console.log`：完整标准输出和错误输出；
+- `control.json`：可请求暂停、继续或在安全边界停止训练。
+
+训练日志默认开启。可用 `--audit-root`、`--audit-run-id`、`--audit-mode` 和
+`--audit-metric-every` 控制位置、运行编号、详细级别和指标频率。只有明确传入
+`--audit-mode off` 才会关闭；正式训练不应关闭。也可用环境变量
+`GOMOKU_TRAINING_LOG_DIR`、`GOMOKU_TRAINING_AUDIT` 和
+`GOMOKU_TRAINING_AUDIT_EVERY` 设置未来训练的统一默认值。
+
+```bash
+# 查看最近训练
+python -m alphazero_training.training_audit list
+
+# 查看一轮训练的清单
+python -m alphazero_training.training_audit status RUN_ID
+
+# 在下一个安全边界暂停、继续或停止
+python -m alphazero_training.training_audit control RUN_ID pause --reason "operator review"
+python -m alphazero_training.training_audit control RUN_ID resume
+python -m alphazero_training.training_audit control RUN_ID stop --reason "manual stop"
+
+# 校验事件哈希链；加 --artifacts 会重新计算所有登记产物的 SHA256
+python -m alphazero_training.training_audit verify RUN_ID --artifacts
+```
+
+暂停与停止均由训练循环主动读取 `control.json`，不会在写 checkpoint 的过程中粗暴
+终止进程。日志目录属于本地/云端训练产物，默认不提交到 Git；精简后的验收报告仍可
+按发布流程单独纳入版本控制。
 
 ## Rapfi 教师蒸馏与标准纠错流程
 

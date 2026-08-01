@@ -122,12 +122,14 @@ The game currently loads the approved checkpoint below:
 
 | Item | Result |
 | --- | --- |
-| Displayed model | Gargantua V2, iteration 174 |
+| Displayed model | Gargantua V3.2 R7 |
 | Board size | 19×19 |
-| Replay buffer recorded in checkpoint | 500,000 positions |
+| Training release | Round 7 league self-play with Round 6 regret, tactical, and white-defense retention |
 | Desktop search | 256 MCTS simulations per move |
 | Held-out legal tactical positions | 47 / 48 correct from the raw network |
 | White-defense safe top move set | 16 / 18 correct |
+| Independent Rapfi blind test | Candidate score 0.2554 vs 0.2280, `p = 0.000305` vs previous champion |
+| Direct color-swapped arena | 54.25% over 2,048 games, `p = 1.17e-10` |
 | Pygame integration regression suite | 159 tactical decisions passed |
 
 The interface-level tactical guard also checks immediate wins and mandatory blocks before accepting a search result. These results show that the program can conduct practical games as either color, but they should not be interpreted as proof that the model is unbeatable.
@@ -135,7 +137,7 @@ The interface-level tactical guard also checks immediate wins and mandatory bloc
 Checkpoint SHA256:
 
 ```text
-ad2082e7d0223a42047cf0b349b0de17b7fe88c0145dea95c9f2bbe709c6c96e
+5e25cd5731084f1ca4e2eee9c7b20b2ea20f2719d4c51923a30f39567efcd49c
 ```
 
 ## Validation

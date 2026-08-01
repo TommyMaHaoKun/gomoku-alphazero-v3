@@ -311,6 +311,19 @@ class WhiteDefenseSupervisedTests(unittest.TestCase):
         configure_selective_freeze(legacy_default, 0)
         self.assertFalse(any(parameter.requires_grad for parameter in legacy_default.tower.parameters()))
 
+    def test_value_only_head_freeze_preserves_policy_head(self) -> None:
+        from alphazero_training.train_v3_supervised import configure_trainable_heads
+
+        model = PolicyValueNet(5, 4, 2)
+        configure_selective_freeze(model, 0)
+        configure_trainable_heads(model, "value")
+        self.assertFalse(any(p.requires_grad for p in model.policy_conv.parameters()))
+        self.assertFalse(any(p.requires_grad for p in model.policy_fc.parameters()))
+        self.assertTrue(all(p.requires_grad for p in model.value_conv.parameters()))
+        self.assertTrue(all(p.requires_grad for p in model.value_fc2.parameters()))
+        with self.assertRaisesRegex(ValueError, "train_heads"):
+            configure_trainable_heads(model, "invalid")
+
     def test_checkpoint_records_selective_freeze_configuration(self) -> None:
         config = Config(board_size=5, channels=4, residual_blocks=2)
         model = PolicyValueNet(5, 4, 2)

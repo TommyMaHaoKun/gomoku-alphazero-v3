@@ -12,9 +12,16 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import torch
+
+
+_ARCHITECTURE_CONFIG_KEYS = (
+    "board_size",
+    "channels",
+    "residual_blocks",
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -78,6 +85,59 @@ def blend_states(
     return blended
 
 
+def verify_model_compatibility(
+    anchor: Mapping[str, Any], update: Mapping[str, Any]
+) -> None:
+    """Reject architectural mismatches while allowing runtime-search differences."""
+    if anchor.get("model_spec") != update.get("model_spec"):
+        raise ValueError("checkpoint model specifications differ")
+    anchor_config = anchor.get("config")
+    update_config = update.get("config")
+    if not isinstance(anchor_config, Mapping) or not isinstance(update_config, Mapping):
+        raise ValueError("both checkpoints must contain mapping configs")
+    mismatched = [
+        key
+        for key in _ARCHITECTURE_CONFIG_KEYS
+        if anchor_config.get(key) != update_config.get(key)
+    ]
+    if mismatched:
+        raise ValueError(
+            "checkpoint architecture configurations differ: " + ", ".join(mismatched)
+        )
+
+
+def verify_parent_link(
+    checkpoint: Mapping[str, Any],
+    checkpoint_hash: str,
+    parent_hash: str,
+    *,
+    label: str,
+    allow_parent_identity: bool = False,
+    parent_aliases: Iterable[str] = (),
+) -> None:
+    """Require parent provenance, allowing the approved parent itself as anchor."""
+    if allow_parent_identity and checkpoint_hash == parent_hash:
+        return
+    recorded = checkpoint.get("source_parent_checkpoint_sha256")
+    if recorded is None:
+        recorded = checkpoint.get("parent_checkpoint_sha256")
+    trusted_hashes = {parent_hash, *(str(value).lower() for value in parent_aliases)}
+    if not isinstance(recorded, str) or recorded.lower() not in trusted_hashes:
+        raise ValueError(
+            f"{label} checkpoint is not linked to approved parent {parent_hash}"
+        )
+
+
+def approved_parent_aliases(checkpoint: Mapping[str, Any]) -> set[str]:
+    """Return source hashes explicitly vouched for by an approved wrapper."""
+    aliases = set()
+    for key in ("source_checkpoint_sha256", "source_parent_checkpoint_sha256"):
+        value = checkpoint.get(key)
+        if isinstance(value, str) and len(value) == 64:
+            aliases.add(value.lower())
+    return aliases
+
+
 def save_no_clobber(payload: Mapping[str, Any], output: Path) -> None:
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -119,19 +179,22 @@ def main() -> int:
     update, update_hash = load_verified(args.update, args.update_sha256)
     if anchor.get("format_version") != 3 or update.get("format_version") != 3:
         raise ValueError("both inputs must be format-v3 checkpoints")
-    if anchor.get("config") != update.get("config"):
-        raise ValueError("checkpoint model configurations differ")
-    if anchor.get("model_spec") != update.get("model_spec"):
-        raise ValueError("checkpoint model specifications differ")
+    verify_model_compatibility(anchor, update)
     parent_hash = args.parent_sha256.lower()
-    for label, checkpoint in (("anchor", anchor), ("update", update)):
-        recorded = checkpoint.get("source_parent_checkpoint_sha256")
-        if recorded is None:
-            recorded = checkpoint.get("parent_checkpoint_sha256")
-        if recorded != parent_hash:
-            raise ValueError(
-                f"{label} checkpoint is not linked to approved parent {parent_hash}"
-            )
+    verify_parent_link(
+        anchor,
+        anchor_hash,
+        parent_hash,
+        label="anchor",
+        allow_parent_identity=True,
+    )
+    verify_parent_link(
+        update,
+        update_hash,
+        parent_hash,
+        label="update",
+        parent_aliases=approved_parent_aliases(anchor),
+    )
     state = blend_states(
         model_state(anchor, args.anchor_model_key, label="anchor"),
         model_state(update, args.update_model_key, label="update"),
