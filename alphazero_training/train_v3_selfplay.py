@@ -68,6 +68,7 @@ from .train_alphazero import (
     PolicyValueNet,
 )
 from .v3_search import V3RootSearch
+from .training_audit import TrainingAudit, add_audit_arguments
 
 
 STOP_REQUESTED = False
@@ -1975,6 +1976,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every-steps", type=int)
     parser.add_argument("--allow-cpu", action="store_true")
     parser.add_argument("--smoke", action="store_true")
+    add_audit_arguments(parser)
     return parser.parse_args()
 
 
@@ -2027,7 +2029,13 @@ def _white_defense_manifest_path(
 def main() -> int:
     args = parse_args()
     output_dir = args.output_dir.resolve()
+    audit = TrainingAudit.from_namespace(
+        args,
+        trainer="train_v3_selfplay",
+        config=vars(args),
+    )
     configure_logging(output_dir)
+    audit.event("phase", {"name": "initialization", "state": "started"}, force=True)
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
 
@@ -2081,6 +2089,7 @@ def main() -> int:
         if args.init_checkpoint is None:
             raise ValueError("--init-checkpoint is required for a new V3 run")
         init_path = args.init_checkpoint.resolve()
+        audit.record_artifact(init_path, role="input_checkpoint")
         warm = torch.load(init_path, map_location="cpu", weights_only=False)
         if (
             warm.get("format_version") != 3
@@ -2104,6 +2113,7 @@ def main() -> int:
             raise ValueError("resume checkpoint best_model is not the approved champion")
     elif args.approved_checkpoint is not None:
         approved_path = args.approved_checkpoint.resolve()
+        audit.record_artifact(approved_path, role="approved_checkpoint")
         approved_checkpoint = torch.load(
             approved_path, map_location="cpu", weights_only=False
         )
@@ -2162,6 +2172,12 @@ def main() -> int:
         raise ValueError(
             "positive --white-defense-quota requires an authenticated white-defense dataset"
         )
+    audit.record_artifact(expert_path, role="expert_dataset")
+    audit.record_artifact(tactical_path, role="tactical_dataset")
+    if white_defense_path is not None:
+        audit.record_artifact(white_defense_path, role="white_defense_dataset")
+    if white_defense_manifest_path is not None:
+        audit.record_artifact(white_defense_manifest_path, role="dataset_manifest")
 
     static_sources: dict[str, StaticReplaySource] = {
         "ddqk": StaticReplaySource("ddqk", expert_path, search_config.board_size, loop_config.seed + 11),
@@ -2242,6 +2258,7 @@ def main() -> int:
     start_iteration = 1
     global_step = 0
     if resume_path is not None:
+        audit.record_artifact(resume_path, role="resume_checkpoint")
         restored = restore_v3_checkpoint(
             resume_path,
             model=model,
@@ -2314,9 +2331,19 @@ def main() -> int:
             metrics={"status": "initialized", "replay_loaded": loaded},
             sampler_rng_state=sampler_rng_state(replay, static_sources, mixer),
         )
+        audit.record_artifact(latest_path, role="training_checkpoint_initialized")
+    audit.event("phase", {"name": "selfplay_training", "state": "started"}, force=True)
+    completed_iteration = start_iteration - 1
     for iteration in range(start_iteration, loop_config.iterations + 1):
         if STOP_REQUESTED:
             break
+        if audit.check_control():
+            audit.finish(
+                "stopped",
+                {"iteration": iteration - 1, "reason": "control request"},
+            )
+            logging.info("V3 self-play stopped by audit control")
+            return 0
         iteration_started = time.perf_counter()
         generated, selfplay_metrics = generate_v3_selfplay(
             model,
@@ -2383,10 +2410,24 @@ def main() -> int:
             json.dumps(metrics, ensure_ascii=False),
             latest_path,
         )
+        audit.event(
+            "iteration_metrics",
+            {
+                "iteration": iteration,
+                "global_step": global_step,
+                "metrics": metrics,
+            },
+        )
+        audit.record_artifact(latest_path, role="training_checkpoint")
+        completed_iteration = iteration
         if STOP_REQUESTED:
             break
 
     logging.info("V3 self-play stopped cleanly")
+    audit.finish(
+        "stopped" if STOP_REQUESTED else "completed",
+        {"iteration": completed_iteration},
+    )
     return 0
 
 

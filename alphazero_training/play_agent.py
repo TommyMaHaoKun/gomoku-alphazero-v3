@@ -48,6 +48,11 @@ from .v3_search import V3RootSearch
 DEFAULT_PLAY_SIMULATIONS = 256
 PLAY_SIMULATIONS_ENV = "GOMOKU_MCTS_SIMULATIONS"
 MODEL_NAME = "Gargantua"
+MODEL_RELEASE_VERSION = "V3.2"
+MODEL_TRAINING_RELEASE = "R7"
+CURRENT_MODEL_LABEL = (
+    f"{MODEL_NAME} {MODEL_RELEASE_VERSION} {MODEL_TRAINING_RELEASE}"
+)
 
 
 def configured_play_simulations(simulations: int | None = None) -> int:
@@ -98,12 +103,15 @@ class AlphaZeroGomokuAgent:
         )
         raw_config = checkpoint["config"]
         format_version = int(checkpoint.get("format_version", 0))
-        self.training_version = (
-            "v3"
-            if format_version >= 3
-            else "v2"
-            if "candidate_radius" in raw_config
-            else "v1"
+        self.training_version = str(
+            checkpoint.get("model_version")
+            or (
+                "v3"
+                if format_version >= 3
+                else "v2"
+                if "candidate_radius" in raw_config
+                else "v1"
+            )
         )
         self.config = Config(**raw_config)
         self.simulations = configured_play_simulations(simulations)
@@ -132,7 +140,7 @@ class AlphaZeroGomokuAgent:
 
     @property
     def model_label(self) -> str:
-        return f"{MODEL_NAME} {self.training_version.upper()} i{self.iteration}"
+        return CURRENT_MODEL_LABEL
 
     @property
     def search_label(self) -> str:

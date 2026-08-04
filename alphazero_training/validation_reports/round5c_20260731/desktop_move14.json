@@ -1,0 +1,77 @@
+{
+  "checkpoint": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/desktop_loss_repair_round5c/training/last3_repair_s8000_eval.pt",
+  "checkpoint_sha256": "04a75eeef57d7221fd90df23c285d7c788d265cfbb29495b7391156f02939894",
+  "dataset": "/root/autodl-tmp/gomoku_v3/rapfi_distillation/desktop_loss_corrections/desktop_20260731T024514_932773Z_c48f1c86_move14_rapfi.npz",
+  "dataset_sha256": "c6c4fdd01a751bfb97323bf0b545b9373ff835d7d591a21ba7361ec19df056fe",
+  "source": "desktop_loss_correction|game=desktop_20260731T024514_932773Z_c48f1c86|move=14|sym=0",
+  "move_number": 14,
+  "teacher_action": 180,
+  "teacher_xy": [
+    9,
+    9
+  ],
+  "mistake_action": 217,
+  "mistake_xy": [
+    8,
+    11
+  ],
+  "raw_network": {
+    "teacher_legal_rank": 1,
+    "teacher_probability": 0.4245220720767975,
+    "mistake_legal_rank": 3,
+    "mistake_probability": 0.12543965876102448,
+    "top5_legal": [
+      {
+        "action": 180,
+        "xy": [
+          9,
+          9
+        ],
+        "probability": 0.4245220720767975
+      },
+      {
+        "action": 159,
+        "xy": [
+          7,
+          8
+        ],
+        "probability": 0.17032141983509064
+      },
+      {
+        "action": 217,
+        "xy": [
+          8,
+          11
+        ],
+        "probability": 0.12543965876102448
+      },
+      {
+        "action": 178,
+        "xy": [
+          7,
+          9
+        ],
+        "probability": 0.05673323944211006
+      },
+      {
+        "action": 181,
+        "xy": [
+          10,
+          9
+        ],
+        "probability": 0.030635511502623558
+      }
+    ],
+    "value": -0.18857848644256592
+  },
+  "deployed_search": {
+    "simulations": 256,
+    "action": 180,
+    "xy": [
+      9,
+      9
+    ],
+    "reason": "mcts"
+  },
+  "passed": true
+}

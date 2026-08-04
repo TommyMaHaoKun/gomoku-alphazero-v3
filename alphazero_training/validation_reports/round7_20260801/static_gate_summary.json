@@ -1,0 +1,52 @@
+{
+  "round7_full": {
+    "checkpoint": "rapfi_distillation/round7_league_selfplay/round7_full_eval.pt",
+    "checkpoint_sha256": "d0961835f2ec13f71c432254047d7feb19c5480d12678e93a99991abba500130",
+    "raw_tactics": 46,
+    "deployed_tactics": 48,
+    "white_safe_count": 15,
+    "white_safe_probability_mass": 0.8146667807874157,
+    "move14_passed": false,
+    "hard_gate_passed": false
+  },
+  "round7_a010": {
+    "checkpoint": "rapfi_distillation/round7_league_selfplay/round7_a010_eval.pt",
+    "checkpoint_sha256": "17cab93cb94ab6d127ef13502c9124e59e994c4f66a5fe4f3c996b8096864e8e",
+    "raw_tactics": 47,
+    "deployed_tactics": 48,
+    "white_safe_count": 16,
+    "white_safe_probability_mass": 0.7779579224773203,
+    "move14_passed": true,
+    "hard_gate_passed": true
+  },
+  "round7_a020": {
+    "checkpoint": "rapfi_distillation/round7_league_selfplay/round7_a020_eval.pt",
+    "checkpoint_sha256": "3c4a8501edf7b27b49224623439e8c79c3a8d29a9398cc2c3b7d585b86aad554",
+    "raw_tactics": 47,
+    "deployed_tactics": 48,
+    "white_safe_count": 16,
+    "white_safe_probability_mass": 0.7844373324234073,
+    "move14_passed": true,
+    "hard_gate_passed": true
+  },
+  "round7_a035": {
+    "checkpoint": "rapfi_distillation/round7_league_selfplay/round7_a035_eval.pt",
+    "checkpoint_sha256": "3a2f343985f56e6212118936cf6df67beff01b7bfaaef9538d97c3d4fa37075b",
+    "raw_tactics": 47,
+    "deployed_tactics": 48,
+    "white_safe_count": 16,
+    "white_safe_probability_mass": 0.7922258036224485,
+    "move14_passed": false,
+    "hard_gate_passed": true
+  },
+  "round7_a050": {
+    "checkpoint": "rapfi_distillation/round7_league_selfplay/round7_a050_eval.pt",
+    "checkpoint_sha256": "dcffe404ccb635d3d9ba64208bff992ce0eac792071bdcc42d489dfe5079e678",
+    "raw_tactics": 46,
+    "deployed_tactics": 48,
+    "white_safe_count": 16,
+    "white_safe_probability_mass": 0.7988644985063004,
+    "move14_passed": false,
+    "hard_gate_passed": false
+  }
+}

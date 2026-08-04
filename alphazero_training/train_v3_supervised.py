@@ -32,6 +32,7 @@ from .train_v3_selfplay import (
     safe_hard_negative_margin_loss,
     validate_white_defense_manifest,
 )
+from .training_audit import TrainingAudit, add_audit_arguments
 
 
 def sha256_file(path: Path) -> str:
@@ -88,6 +89,11 @@ class DatasetPool:
             self.policy_weights = data[policy_weight_key].astype(np.float32, copy=True)
             self.value_weights = data[value_weight_key].astype(np.float32, copy=True)
             self.priority = data["priority"].astype(np.float64, copy=True)
+            self.mistake_actions = (
+                data["mistake_action"].astype(np.int64, copy=True)
+                if "mistake_action" in data.files
+                else np.full(len(self.states), -1, dtype=np.int64)
+            )
             has_safe_mask = "safe_mask" in data.files
             has_candidate_mask = "candidate_mask" in data.files
             has_white_source = (
@@ -170,6 +176,7 @@ class DatasetPool:
             ("policy_weights", self.policy_weights),
             ("value_weights", self.value_weights),
             ("priority", self.priority),
+            ("mistake_actions", self.mistake_actions),
             ("groups", groups),
         ):
             if array.shape != (count,):
@@ -234,6 +241,29 @@ class DatasetPool:
             raise ValueError(f"{self.path}: loss weights cannot be negative")
         if np.any(self.priority <= 0) or not np.all(np.isfinite(self.priority)):
             raise ValueError(f"{self.path}: priorities must be finite and positive")
+        mistake_rows = self.mistake_actions >= 0
+        if np.any(self.mistake_actions < -1) or np.any(self.mistake_actions >= 361):
+            raise ValueError(f"{self.path}: mistake_action must be -1 or a legal action")
+        if np.any(mistake_rows & occupied.reshape(count, -1)[
+            np.arange(count), np.maximum(self.mistake_actions, 0)
+        ]):
+            raise ValueError(f"{self.path}: mistake_action points to an occupied cell")
+        if np.any(
+            mistake_rows
+            & (
+                self.policies[
+                    np.arange(count), np.maximum(self.mistake_actions, 0)
+                ]
+                > 1e-6
+            )
+        ):
+            raise ValueError(
+                f"{self.path}: mistake_action must differ from every teacher target"
+            )
+        if self.dataset_kind == "white_defense" and np.any(mistake_rows):
+            raise ValueError(
+                f"{self.path}: white-defense safe-set rows cannot carry mistake actions"
+            )
         if not 0.0 <= validation_fraction < 0.5:
             raise ValueError("validation fraction must be in [0, 0.5)")
 
@@ -290,6 +320,7 @@ class DatasetPool:
             "safe_masks": self.safe_masks[indices],
             "candidate_masks": self.candidate_masks[indices],
             "safe_set_rows": self.safe_set_rows[indices],
+            "mistake_actions": self.mistake_actions[indices],
         }
 
     def manifest(self) -> dict[str, object]:
@@ -303,6 +334,7 @@ class DatasetPool:
             "groups": self.group_count,
             "sampling": "equal_group_mass_then_position_priority",
             "dataset_kind": self.dataset_kind,
+            "mistake_rows": int(np.sum(self.mistake_actions >= 0)),
         }
         if self.white_defense_provenance is not None:
             result.update(
@@ -344,6 +376,55 @@ def concatenate_batch(parts: list[dict[str, np.ndarray]], rng: np.random.Generat
     batch = {key: np.concatenate([part[key] for part in parts], axis=0) for key in parts[0]}
     order = rng.permutation(len(batch["states"]))
     return {key: value[order] for key, value in batch.items()}
+
+
+def _transform_actions_d4(actions: np.ndarray, symmetries: np.ndarray) -> np.ndarray:
+    transformed = actions.copy()
+    valid = transformed >= 0
+    x = np.where(valid, transformed % 19, 0)
+    y = np.where(valid, transformed // 19, 0)
+    reflected = symmetries >= 4
+    x = np.where(reflected & valid, 18 - x, x)
+    rotations = symmetries % 4
+    for rotation in (1, 2, 3):
+        selected = valid & (rotations >= rotation)
+        old_x = x.copy()
+        x = np.where(selected, 18 - y, x)
+        y = np.where(selected, old_x, y)
+    transformed[valid] = y[valid] * 19 + x[valid]
+    return transformed
+
+
+def d4_augment_batch(
+    batch: dict[str, np.ndarray], symmetries: np.ndarray
+) -> dict[str, np.ndarray]:
+    symmetries = np.asarray(symmetries, dtype=np.int8)
+    if symmetries.shape != (len(batch["states"]),):
+        raise ValueError("one D4 symmetry is required per batch row")
+    if np.any(symmetries < 0) or np.any(symmetries > 7):
+        raise ValueError("D4 symmetries must be integers in [0, 7]")
+    result = {key: value.copy() for key, value in batch.items()}
+    spatial_keys = ("states", "policies", "safe_masks", "candidate_masks")
+    for symmetry in range(1, 8):
+        indices = np.flatnonzero(symmetries == symmetry)
+        if not len(indices):
+            continue
+        reflected = symmetry >= 4
+        rotations = symmetry % 4
+        for key in spatial_keys:
+            source = batch[key][indices]
+            original_shape = source.shape
+            if key != "states":
+                source = source.reshape(-1, 19, 19)
+            if reflected:
+                source = np.flip(source, axis=-1)
+            if rotations:
+                source = np.rot90(source, k=-rotations, axes=(-2, -1))
+            result[key][indices] = np.ascontiguousarray(source).reshape(original_shape)
+    result["mistake_actions"] = _transform_actions_d4(
+        batch["mistake_actions"], symmetries
+    )
+    return result
 
 
 def weighted_loss(
@@ -429,6 +510,42 @@ def policy_distillation_kl(
     )
 
 
+def mistake_hard_negative_margin_loss(
+    logits: torch.Tensor,
+    target_policies: torch.Tensor,
+    policy_weights: torch.Tensor,
+    mistake_actions: torch.Tensor,
+    *,
+    margin: float = 1.0,
+) -> torch.Tensor:
+    """Require the teacher action to outrank the student's recorded mistake."""
+
+    if logits.shape != target_policies.shape:
+        raise ValueError("target_policies must match logits")
+    if policy_weights.shape != (len(logits),):
+        raise ValueError("policy_weights must have one value per row")
+    if mistake_actions.shape != (len(logits),):
+        raise ValueError("mistake_actions must have one action per row")
+    if margin < 0 or not math.isfinite(margin):
+        raise ValueError("margin must be finite and non-negative")
+    mistake_actions = mistake_actions.to(device=logits.device, dtype=torch.long)
+    rows = mistake_actions >= 0
+    if not bool(rows.any()):
+        return logits.sum() * 0.0
+    selected = mistake_actions[rows]
+    if bool(torch.any(selected >= logits.shape[1])):
+        raise ValueError("mistake action lies outside policy logits")
+    teacher_actions = target_policies[rows].argmax(dim=1)
+    if bool(torch.any(teacher_actions == selected)):
+        raise ValueError("mistake action cannot equal the teacher action")
+    row_index = torch.arange(len(selected), device=logits.device)
+    teacher_logits = logits[rows][row_index, teacher_actions]
+    mistake_logits = logits[rows][row_index, selected]
+    losses = F.relu(float(margin) - teacher_logits + mistake_logits)
+    weights = policy_weights[rows]
+    return (losses * weights).sum() / weights.sum().clamp_min(1e-8)
+
+
 def hold_batchnorm_fixed(model: nn.Module) -> None:
     """Keep pretrained BN statistics stable on the small synthetic curriculum."""
     for module in model.modules():
@@ -465,6 +582,18 @@ def unfreeze_all_parameters(model: nn.Module) -> None:
         parameter.requires_grad_(True)
 
 
+def configure_trainable_heads(model: PolicyValueNet, train_heads: str) -> None:
+    """Restrict optimization to the selected output heads after trunk setup."""
+    if train_heads not in {"both", "policy", "value"}:
+        raise ValueError("train_heads must be one of: both, policy, value")
+    if train_heads == "both":
+        return
+    frozen_prefix = "value_" if train_heads == "policy" else "policy_"
+    for name, parameter in model.named_parameters():
+        if name.startswith(frozen_prefix):
+            parameter.requires_grad_(False)
+
+
 @torch.inference_mode()
 def evaluate(
     model: PolicyValueNet,
@@ -485,6 +614,10 @@ def evaluate(
         value_absolute_error_sum = 0.0
         value_square_error_sum = 0.0
         value_weight_sum = 0.0
+        mistake_rows = 0
+        teacher_over_mistake = 0
+        teacher_over_mistake_margin_one = 0
+        teacher_minus_mistake_logit_sum = 0.0
         for start in range(0, len(indices), 512):
             batch = pool.take(indices[start : start + 512])
             states = torch.from_numpy(batch["states"]).to(device=device, dtype=torch.float32)
@@ -501,10 +634,25 @@ def evaluate(
             safe_set_rows = torch.from_numpy(batch["safe_set_rows"]).to(
                 device=device, dtype=torch.bool
             )
+            mistake_actions = torch.from_numpy(batch["mistake_actions"]).to(
+                device=device, dtype=torch.long
+            )
             logits, predicted_values = model(states)
             global_chosen = logits.argmax(dim=1)
             row = torch.arange(len(global_chosen), device=device)
             log_probabilities = F.log_softmax(logits, dim=1)
+            has_mistake = mistake_actions >= 0
+            if bool(has_mistake.any()):
+                teacher_actions = targets.argmax(dim=1)
+                mistake_rows_batch = row[has_mistake]
+                margins = (
+                    logits[mistake_rows_batch, teacher_actions[has_mistake]]
+                    - logits[mistake_rows_batch, mistake_actions[has_mistake]]
+                )
+                mistake_rows += int(has_mistake.sum())
+                teacher_over_mistake += int((margins > 0).sum())
+                teacher_over_mistake_margin_one += int((margins >= 1.0).sum())
+                teacher_minus_mistake_logit_sum += float(margins.sum())
             if pool.dataset_kind == "white_defense":
                 if not bool(safe_set_rows.all()):
                     raise ValueError("white-defense evaluation batch lost its source flags")
@@ -580,6 +728,20 @@ def evaluate(
             )
         else:
             result["policy_top1"] = correct / max(len(indices), 1)
+            if mistake_rows:
+                result.update(
+                    {
+                        "mistake_rows": mistake_rows,
+                        "teacher_over_mistake_rate": teacher_over_mistake
+                        / mistake_rows,
+                        "teacher_over_mistake_margin_one_rate": (
+                            teacher_over_mistake_margin_one / mistake_rows
+                        ),
+                        "teacher_minus_mistake_logit_mean": (
+                            teacher_minus_mistake_logit_sum / mistake_rows
+                        ),
+                    }
+                )
         results.append(result)
     return {"datasets": results}
 
@@ -601,8 +763,12 @@ def save_checkpoint(
     policy_distill_scale: float,
     freeze_trunk_steps: int,
     train_last_residual_blocks_during_freeze: int,
+    train_heads: str = "both",
     safe_hard_negative_scale: float = 0.0,
     safe_hard_negative_margin: float = 1.0,
+    mistake_hard_negative_scale: float = 0.0,
+    mistake_hard_negative_margin: float = 1.0,
+    random_d4_augmentation: bool = False,
     white_defense_union_audit: dict[str, object] | None = None,
 ) -> None:
     payload = {
@@ -617,10 +783,14 @@ def save_checkpoint(
             "policy_distill_scale": float(policy_distill_scale),
             "safe_hard_negative_scale": float(safe_hard_negative_scale),
             "safe_hard_negative_margin": float(safe_hard_negative_margin),
+            "mistake_hard_negative_scale": float(mistake_hard_negative_scale),
+            "mistake_hard_negative_margin": float(mistake_hard_negative_margin),
+            "random_d4_augmentation": bool(random_d4_augmentation),
             "freeze_trunk_steps": int(freeze_trunk_steps),
             "train_last_residual_blocks_during_freeze": int(
                 train_last_residual_blocks_during_freeze
             ),
+            "train_heads": train_heads,
         },
         "model_spec": {
             "board_size": config.board_size,
@@ -766,6 +936,11 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--min-learning-rate", type=float, default=3e-5)
     parser.add_argument("--warmup-steps", type=int, default=100)
+    parser.add_argument(
+        "--random-d4-augmentation",
+        action="store_true",
+        help="apply an independent random rotation/reflection to every training row",
+    )
     parser.add_argument("--freeze-trunk-steps", type=int, default=0)
     parser.add_argument(
         "--train-last-residual-blocks-during-freeze",
@@ -775,6 +950,12 @@ def main() -> None:
             "while --freeze-trunk-steps is active, keep the last N residual "
             "blocks trainable with the policy/value heads (default: 0)"
         ),
+    )
+    parser.add_argument(
+        "--train-heads",
+        choices=("both", "policy", "value"),
+        default="both",
+        help="optionally freeze one output head while training (default: both)",
     )
     parser.add_argument(
         "--value-loss-scale",
@@ -812,6 +993,21 @@ def main() -> None:
             "unsafe candidate when the margin loss is enabled (default: 1)"
         ),
     )
+    parser.add_argument(
+        "--mistake-hard-negative-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "weight for teacher-vs-recorded-mistake logit margin loss "
+            "(default: 0, disabled)"
+        ),
+    )
+    parser.add_argument(
+        "--mistake-hard-negative-margin",
+        type=float,
+        default=1.0,
+        help="required teacher-logit lead over each recorded mistake",
+    )
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--eval-every", type=int, default=100)
     parser.add_argument(
@@ -820,7 +1016,15 @@ def main() -> None:
         help="update BatchNorm on curriculum data (disabled by default to avoid drift)",
     )
     parser.add_argument("--seed", type=int, default=20260722)
+    add_audit_arguments(parser)
     args = parser.parse_args()
+
+    audit = TrainingAudit.from_namespace(
+        args,
+        trainer="train_v3_supervised",
+        config=vars(args),
+    )
+    audit.event("phase", {"name": "validation", "state": "started"}, force=True)
 
     if args.steps <= 0 or args.batch_size <= 0:
         raise SystemExit("steps and batch size must be positive")
@@ -831,15 +1035,25 @@ def main() -> None:
         or args.value_distill_scale < 0
         or args.policy_distill_scale < 0
         or args.safe_hard_negative_scale < 0
+        or args.mistake_hard_negative_scale < 0
     ):
         raise SystemExit("value and policy loss scales cannot be negative")
     if not math.isfinite(args.safe_hard_negative_scale):
         raise SystemExit("--safe-hard-negative-scale must be finite")
+    if not math.isfinite(args.mistake_hard_negative_scale):
+        raise SystemExit("--mistake-hard-negative-scale must be finite")
     if (
         args.safe_hard_negative_margin < 0
         or not math.isfinite(args.safe_hard_negative_margin)
     ):
         raise SystemExit("--safe-hard-negative-margin must be finite and non-negative")
+    if (
+        args.mistake_hard_negative_margin < 0
+        or not math.isfinite(args.mistake_hard_negative_margin)
+    ):
+        raise SystemExit(
+            "--mistake-hard-negative-margin must be finite and non-negative"
+        )
     if args.eval_every <= 0:
         raise SystemExit("--eval-every must be positive")
     try:
@@ -867,6 +1081,13 @@ def main() -> None:
         torch.set_float32_matmul_precision("high")
 
     init_path = args.init_checkpoint.resolve()
+    audit.record_artifact(init_path, role="input_checkpoint")
+    for dataset_path in args.dataset:
+        audit.record_artifact(dataset_path, role="training_dataset")
+    for dataset_path in args.white_defense_npz or []:
+        audit.record_artifact(dataset_path, role="white_defense_dataset")
+    for manifest_path in args.white_defense_manifest or []:
+        audit.record_artifact(manifest_path, role="dataset_manifest")
     parent = torch.load(init_path, map_location="cpu", weights_only=False)
     config = Config(**parent["config"])
     model = PolicyValueNet(config.board_size, config.channels, config.residual_blocks).to(device)
@@ -906,6 +1127,12 @@ def main() -> None:
         raise SystemExit(
             "--safe-hard-negative-scale requires authenticated white-defense data"
         )
+    if args.mistake_hard_negative_scale and not any(
+        np.any(pool.mistake_actions >= 0) for pool in pools
+    ):
+        raise SystemExit(
+            "--mistake-hard-negative-scale requires a dataset with mistake_action"
+        )
     manifests = [pool.manifest() for pool in pools]
 
     optimizer = torch.optim.AdamW(
@@ -927,14 +1154,18 @@ def main() -> None:
             model,
             args.train_last_residual_blocks_during_freeze,
         )
+    configure_trainable_heads(model, args.train_heads)
     if not args.update_batchnorm:
         hold_batchnorm_fixed(model)
 
     metrics = evaluate(model, pools, device)
     print(json.dumps({"step": 0, "validation": metrics}, ensure_ascii=False), flush=True)
+    audit.event("validation", {"step": 0, "metrics": metrics})
+    audit.event("phase", {"name": "training", "state": "started"}, force=True)
     for step in range(1, args.steps + 1):
         if step == args.freeze_trunk_steps + 1:
             unfreeze_all_parameters(model)
+            configure_trainable_heads(model, args.train_heads)
         model.train()
         if not args.update_batchnorm:
             hold_batchnorm_fixed(model)
@@ -942,6 +1173,11 @@ def main() -> None:
             [pool.sample(int(count)) for pool, count in zip(pools, counts)],
             rng,
         )
+        if args.random_d4_augmentation:
+            batch = d4_augment_batch(
+                batch,
+                rng.integers(0, 8, size=len(batch["states"]), dtype=np.int8),
+            )
         states = torch.from_numpy(batch["states"]).to(device=device, dtype=torch.float32)
         policies = torch.from_numpy(batch["policies"]).to(device=device)
         values = torch.from_numpy(batch["values"]).to(device=device)
@@ -952,6 +1188,9 @@ def main() -> None:
         )
         candidate_masks = torch.from_numpy(batch["candidate_masks"]).to(
             device=device, dtype=torch.bool
+        )
+        mistake_actions = torch.from_numpy(batch["mistake_actions"]).to(
+            device=device, dtype=torch.long
         )
 
         optimizer.zero_grad(set_to_none=True)
@@ -980,6 +1219,17 @@ def main() -> None:
                 loss = loss + args.safe_hard_negative_scale * safe_margin_loss
             else:
                 safe_margin_loss = predicted_values.new_zeros(())
+            if args.mistake_hard_negative_scale:
+                mistake_margin_loss = mistake_hard_negative_margin_loss(
+                    logits,
+                    policies,
+                    policy_weights,
+                    mistake_actions,
+                    margin=args.mistake_hard_negative_margin,
+                )
+                loss = loss + args.mistake_hard_negative_scale * mistake_margin_loss
+            else:
+                mistake_margin_loss = predicted_values.new_zeros(())
             if teacher is not None:
                 with torch.no_grad():
                     teacher_logits, teacher_values = teacher(states)
@@ -1004,6 +1254,18 @@ def main() -> None:
         scheduler.step()
 
         if step == 1 or step % 25 == 0:
+            step_metrics = {
+                "step": step,
+                "steps": args.steps,
+                "loss": float(loss.detach()),
+                "policy_loss": float(policy_loss.detach()),
+                "value_loss": float(value_loss.detach()),
+                "value_distill_loss": float(value_distill_loss.detach()),
+                "policy_distill_loss": float(policy_distill_loss.detach()),
+                "safe_margin_loss": float(safe_margin_loss.detach()),
+                "mistake_margin_loss": float(mistake_margin_loss.detach()),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            }
             print(
                 f"step={step}/{args.steps} loss={float(loss.detach()):.4f} "
                 f"policy={float(policy_loss.detach()):.4f} "
@@ -1011,12 +1273,16 @@ def main() -> None:
                 f"value_kd={float(value_distill_loss.detach()):.4f} "
                 f"policy_kd={float(policy_distill_loss.detach()):.4f} "
                 f"safe_margin={float(safe_margin_loss.detach()):.4f} "
+                f"mistake_margin={float(mistake_margin_loss.detach()):.4f} "
                 f"lr={optimizer.param_groups[0]['lr']:.6g}",
                 flush=True,
             )
+            if audit.should_log_metric(step):
+                audit.event("train_metrics", step_metrics)
         if step % args.eval_every == 0 or step == args.steps:
             metrics = evaluate(model, pools, device)
             print(json.dumps({"step": step, "validation": metrics}, ensure_ascii=False), flush=True)
+            audit.event("validation", {"step": step, "metrics": metrics})
             save_checkpoint(
                 args.output.resolve(),
                 parent=parent,
@@ -1033,14 +1299,24 @@ def main() -> None:
                 policy_distill_scale=args.policy_distill_scale,
                 safe_hard_negative_scale=args.safe_hard_negative_scale,
                 safe_hard_negative_margin=args.safe_hard_negative_margin,
+                mistake_hard_negative_scale=args.mistake_hard_negative_scale,
+                mistake_hard_negative_margin=args.mistake_hard_negative_margin,
+                random_d4_augmentation=args.random_d4_augmentation,
                 freeze_trunk_steps=args.freeze_trunk_steps,
                 train_last_residual_blocks_during_freeze=(
                     args.train_last_residual_blocks_during_freeze
                 ),
+                train_heads=args.train_heads,
                 white_defense_union_audit=white_defense_union_audit,
             )
+            audit.record_artifact(args.output.resolve(), role="training_checkpoint")
+            if audit.check_control():
+                audit.finish("stopped", {"step": step, "reason": "control request"})
+                print(f"checkpoint={args.output.resolve()}")
+                return
 
     print(f"checkpoint={args.output.resolve()}")
+    audit.finish("completed", {"steps": args.steps, "checkpoint": str(args.output.resolve())})
 
 
 if __name__ == "__main__":

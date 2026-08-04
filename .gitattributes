@@ -2,3 +2,5 @@
 *.pt binary
 *.npz binary
 *.npy binary
+alphazero_training/*.sh text eol=lf
+alphazero_training/validation_reports/** text eol=lf
